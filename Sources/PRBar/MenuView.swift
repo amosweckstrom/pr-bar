@@ -141,11 +141,43 @@ private struct ReviewPill: View {
 // MARK: - Repo section
 
 private struct RepoSection: View {
+    @EnvironmentObject var state: AppState
     let repoResult: RepoPRs
+    @State private var headerHovering = false
+
+    private var collapsed: Bool { state.isCollapsed(repoResult.repo) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
+            header
+
+            if !collapsed {
+                if let error = repoResult.error {
+                    InlineNote(text: error, symbol: "exclamationmark.triangle.fill", tint: Theme.failure)
+                } else if repoResult.pullRequests.isEmpty {
+                    InlineNote(text: "No open pull requests", symbol: "checkmark.circle", tint: .secondary)
+                } else {
+                    ForEach(repoResult.pullRequests) { pr in
+                        PRRow(pr: pr)
+                    }
+                    .padding(.horizontal, 8)
+                }
+            }
+        }
+        .padding(.bottom, 4)
+    }
+
+    private var header: some View {
+        Button {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                state.toggleCollapsed(repoResult.repo)
+            }
+        } label: {
             HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
                 Image(systemName: "shippingbox.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
@@ -158,23 +190,20 @@ private struct RepoSection: View {
                 if repoResult.reviewRequestedCount > 0 {
                     CountChip(count: repoResult.reviewRequestedCount)
                 }
+                if collapsed && repoResult.error == nil {
+                    Text("\(repoResult.pullRequests.count)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 4)
-
-            if let error = repoResult.error {
-                InlineNote(text: error, symbol: "exclamationmark.triangle.fill", tint: Theme.failure)
-            } else if repoResult.pullRequests.isEmpty {
-                InlineNote(text: "No open pull requests", symbol: "checkmark.circle", tint: .secondary)
-            } else {
-                ForEach(repoResult.pullRequests) { pr in
-                    PRRow(pr: pr)
-                }
-                .padding(.horizontal, 8)
-            }
+            .padding(.vertical, 7)
+            .background(Color.primary.opacity(headerHovering ? 0.05 : 0))
+            .contentShape(Rectangle())
         }
-        .padding(.bottom, 4)
+        .buttonStyle(.plain)
+        .onHover { headerHovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: headerHovering)
     }
 }
 

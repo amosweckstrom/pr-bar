@@ -13,8 +13,12 @@ final class AppState: ObservableObject {
     @Published private(set) var lastUpdated: Date?
     @Published var hasToken: Bool
     @Published var launchAtLogin: Bool
+    @Published private(set) var collapsedRepoIDs: Set<String> {
+        didSet { UserDefaults.standard.set(Array(collapsedRepoIDs), forKey: collapsedKey) }
+    }
 
     private let reposKey = "trackedRepos"
+    private let collapsedKey = "collapsedRepos"
     private let refreshInterval: TimeInterval = 180 // 3 minutes
     private var timer: Timer?
     private var viewerLogin: String?
@@ -22,6 +26,8 @@ final class AppState: ObservableObject {
     init() {
         self.hasToken = Keychain.loadToken() != nil
         self.launchAtLogin = LoginItem.isEnabled
+        let savedCollapsed = UserDefaults.standard.array(forKey: collapsedKey) as? [String] ?? []
+        self.collapsedRepoIDs = Set(savedCollapsed)
         if let data = UserDefaults.standard.data(forKey: reposKey),
            let saved = try? JSONDecoder().decode([TrackedRepo].self, from: data) {
             self.repos = saved
@@ -73,6 +79,19 @@ final class AppState: ObservableObject {
     func removeRepo(_ repo: TrackedRepo) {
         repos.removeAll { $0 == repo }
         results.removeAll { $0.repo == repo }
+        collapsedRepoIDs.remove(repo.id)
+    }
+
+    func isCollapsed(_ repo: TrackedRepo) -> Bool {
+        collapsedRepoIDs.contains(repo.id)
+    }
+
+    func toggleCollapsed(_ repo: TrackedRepo) {
+        if collapsedRepoIDs.contains(repo.id) {
+            collapsedRepoIDs.remove(repo.id)
+        } else {
+            collapsedRepoIDs.insert(repo.id)
+        }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
