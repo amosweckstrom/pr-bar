@@ -41,6 +41,26 @@ final class AppState: ObservableObject {
         results.reduce(0) { $0 + $1.reviewRequestedCount }
     }
 
+    /// Your authored PRs that a reviewer has approved or requested changes on,
+    /// across all repos. Changes-requested sort first (more to do), then approved.
+    var respondedPRs: [AttentionPR] {
+        results
+            .flatMap { result in
+                result.pullRequests
+                    .filter { $0.awaitingMyResponse }
+                    .map { AttentionPR(repo: result.repo, pr: $0) }
+            }
+            .sorted { lhs, rhs in
+                func rank(_ s: ReviewState) -> Int { s == .changesRequested ? 0 : 1 }
+                return rank(lhs.pr.reviewState) < rank(rhs.pr.reviewState)
+            }
+    }
+
+    /// Everything that wants the user's attention: reviews owed + responses received.
+    var attentionTotal: Int {
+        reviewRequestedTotal + respondedPRs.count
+    }
+
     func start() {
         Task { await refresh() }
         timer?.invalidate()
@@ -82,17 +102,20 @@ final class AppState: ObservableObject {
         collapsedRepoIDs.remove(repo.id)
     }
 
-    func isCollapsed(_ repo: TrackedRepo) -> Bool {
-        collapsedRepoIDs.contains(repo.id)
+    func isCollapsed(id: String) -> Bool {
+        collapsedRepoIDs.contains(id)
     }
 
-    func toggleCollapsed(_ repo: TrackedRepo) {
-        if collapsedRepoIDs.contains(repo.id) {
-            collapsedRepoIDs.remove(repo.id)
+    func toggleCollapsed(id: String) {
+        if collapsedRepoIDs.contains(id) {
+            collapsedRepoIDs.remove(id)
         } else {
-            collapsedRepoIDs.insert(repo.id)
+            collapsedRepoIDs.insert(id)
         }
     }
+
+    func isCollapsed(_ repo: TrackedRepo) -> Bool { isCollapsed(id: repo.id) }
+    func toggleCollapsed(_ repo: TrackedRepo) { toggleCollapsed(id: repo.id) }
 
     func setLaunchAtLogin(_ enabled: Bool) {
         LoginItem.setEnabled(enabled)

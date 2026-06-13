@@ -24,6 +24,14 @@ enum Theme {
     static var brandGradient: LinearGradient {
         LinearGradient(colors: [brand, brandDeep], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
+
+    static var responseGradient: LinearGradient {
+        LinearGradient(
+            colors: [success, Color(red: 0.11, green: 0.58, blue: 0.34)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
 }
 
 extension CheckStatus {

@@ -63,6 +63,21 @@ struct PullRequest: Identifiable, Hashable {
     let reviewState: ReviewState
     /// True when the signed-in user is an explicitly requested reviewer.
     let reviewRequestedFromMe: Bool
+    /// True when the signed-in user opened this PR.
+    let authoredByMe: Bool
+
+    /// One of your PRs that a reviewer has acted on — approved it or asked for
+    /// changes — and so wants your attention (merge it, or address feedback).
+    var awaitingMyResponse: Bool {
+        authoredByMe && (reviewState == .approved || reviewState == .changesRequested)
+    }
+}
+
+/// A pull request paired with the repo it lives in, for cross-repo sections.
+struct AttentionPR: Identifiable {
+    let repo: TrackedRepo
+    let pr: PullRequest
+    var id: String { pr.id }
 }
 
 /// PRs for one repo, already sorted (review-requested first).

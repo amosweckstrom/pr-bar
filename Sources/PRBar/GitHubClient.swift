@@ -106,6 +106,7 @@ struct GitHubClient {
                 ($0["requestedReviewer"] as? [String: Any])?["login"] as? String
             }
             let requestedFromMe = requestedLogins.contains { $0.caseInsensitiveCompare(viewerLogin) == .orderedSame }
+            let authoredByMe = author.caseInsensitiveCompare(viewerLogin) == .orderedSame
 
             return PullRequest(
                 id: id,
@@ -115,7 +116,8 @@ struct GitHubClient {
                 author: author,
                 checkStatus: CheckStatus(rollup: rollupState),
                 reviewState: ReviewState(decision: node["reviewDecision"] as? String),
-                reviewRequestedFromMe: requestedFromMe
+                reviewRequestedFromMe: requestedFromMe,
+                authoredByMe: authoredByMe
             )
         }
 

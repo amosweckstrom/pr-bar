@@ -48,6 +48,10 @@ struct MenuView: View {
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    if !state.respondedPRs.isEmpty {
+                        YourPRsSection(items: state.respondedPRs)
+                        Divider().opacity(0.4).padding(.horizontal, 14)
+                    }
                     ForEach(Array(state.results.enumerated()), id: \.element.id) { index, repoResult in
                         if index > 0 {
                             Divider().opacity(0.4).padding(.horizontal, 14)
@@ -76,7 +80,13 @@ private struct HeaderBar: View {
                 .font(.system(size: 14, weight: .bold, design: .rounded))
 
             if state.reviewRequestedTotal > 0 {
-                ReviewPill(count: state.reviewRequestedTotal)
+                StatPill(count: state.reviewRequestedTotal, text: "to review",
+                         fill: AnyShapeStyle(Theme.brandGradient), glow: Theme.brand)
+                    .transition(.scale.combined(with: .opacity))
+            }
+            if !state.respondedPRs.isEmpty {
+                StatPill(count: state.respondedPRs.count, text: "responded",
+                         fill: AnyShapeStyle(Theme.responseGradient), glow: Theme.success)
                     .transition(.scale.combined(with: .opacity))
             }
 
@@ -101,7 +111,7 @@ private struct HeaderBar: View {
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 11)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: state.reviewRequestedTotal)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: state.attentionTotal)
     }
 }
 
@@ -120,21 +130,24 @@ private struct LogoMark: View {
     }
 }
 
-private struct ReviewPill: View {
+private struct StatPill: View {
     let count: Int
+    let text: String
+    let fill: AnyShapeStyle
+    let glow: Color
 
     var body: some View {
         HStack(spacing: 3) {
             Text("\(count)")
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-            Text("to review")
+            Text(text)
                 .font(.system(size: 11, weight: .medium))
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 7)
         .padding(.vertical, 2)
-        .background(Theme.brandGradient, in: Capsule())
-        .shadow(color: Theme.brand.opacity(0.35), radius: 3, y: 1)
+        .background(fill, in: Capsule())
+        .shadow(color: glow.opacity(0.35), radius: 3, y: 1)
     }
 }
 
@@ -325,15 +338,156 @@ private struct StatusDot: View {
     }
 }
 
-private struct ReviewTag: View {
+/// A small uppercase pill tag (REVIEW / APPROVED / CHANGES).
+private struct TagLabel: View {
+    let text: String
+    let fill: AnyShapeStyle
+
     var body: some View {
-        Text("REVIEW")
+        Text(text)
             .font(.system(size: 8.5, weight: .heavy))
             .tracking(0.5)
             .foregroundStyle(.white)
             .padding(.horizontal, 4)
             .padding(.vertical, 1.5)
-            .background(Theme.brandGradient, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+            .background(fill, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+    }
+}
+
+private struct ReviewTag: View {
+    var body: some View { TagLabel(text: "REVIEW", fill: AnyShapeStyle(Theme.brandGradient)) }
+}
+
+// MARK: - Your PRs (responses received, across repos)
+
+private struct YourPRsSection: View {
+    @EnvironmentObject var state: AppState
+    let items: [AttentionPR]
+    @State private var headerHovering = false
+
+    private let sectionID = "__your_prs__"
+    private var collapsed: Bool { state.isCollapsed(id: sectionID) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            header
+            if !collapsed {
+                ForEach(items) { item in
+                    MyPRRow(item: item)
+                }
+                .padding(.horizontal, 8)
+            }
+        }
+        .padding(.bottom, 4)
+    }
+
+    private var header: some View {
+        Button {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                state.toggleCollapsed(id: sectionID)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.success)
+                Text("YOUR PRS")
+                    .font(.system(size: 11, weight: .bold))
+                    .tracking(0.4)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Text("\(items.count)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Theme.success)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1.5)
+                    .background(Theme.success.opacity(0.15), in: Capsule())
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(Color.primary.opacity(headerHovering ? 0.05 : 0))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { headerHovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: headerHovering)
+    }
+}
+
+/// A row in the Your PRs section — shows the repo for context (author is you)
+/// and is rail-tinted by the review decision: green approved, red changes.
+private struct MyPRRow: View {
+    let item: AttentionPR
+    @State private var hovering = false
+
+    private var pr: PullRequest { item.pr }
+    private var approved: Bool { pr.reviewState == .approved }
+    private var accent: Color { approved ? Theme.success : Theme.failure }
+
+    var body: some View {
+        Button(action: open) {
+            HStack(alignment: .top, spacing: 10) {
+                StatusDot(status: pr.checkStatus)
+                    .padding(.top, 4)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        TagLabel(
+                            text: approved ? "APPROVED" : "CHANGES",
+                            fill: AnyShapeStyle(approved ? Theme.responseGradient
+                                                         : LinearGradient(colors: [Theme.failure, Color(red: 0.78, green: 0.18, blue: 0.2)],
+                                                                          startPoint: .topLeading, endPoint: .bottomTrailing))
+                        )
+                        Text(pr.title)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                    HStack(spacing: 7) {
+                        Text("#\(pr.number)")
+                            .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Theme.brand.opacity(0.85))
+                        Label(item.repo.slug, systemImage: "shippingbox")
+                            .labelStyle(CompactLabel())
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.brand)
+                    .opacity(hovering ? 1 : 0)
+                    .padding(.top, 3)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(accent.opacity(hovering ? 0.16 : 0.09))
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(accent)
+                    .frame(width: 3)
+                    .padding(.vertical, 4)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: Theme.rowRadius, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+
+    private func open() {
+        if let url = URL(string: pr.url) {
+            NSWorkspace.shared.open(url)
+        }
     }
 }
 
