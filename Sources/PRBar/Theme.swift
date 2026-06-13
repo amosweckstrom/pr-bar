@@ -32,6 +32,14 @@ enum Theme {
             endPoint: .bottomTrailing
         )
     }
+
+    static var changesGradient: LinearGradient {
+        LinearGradient(
+            colors: [failure, Color(red: 0.78, green: 0.18, blue: 0.2)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
 }
 
 extension CheckStatus {
