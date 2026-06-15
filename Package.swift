@@ -2,14 +2,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "PRBar",
+    name: "LGTM",
     platforms: [
         .macOS(.v14)
     ],
     targets: [
         .executableTarget(
-            name: "PRBar",
-            path: "Sources/PRBar"
+            name: "LGTM",
+            path: "Sources/LGTM"
+        ),
+        .testTarget(
+            name: "LGTMTests",
+            dependencies: ["LGTM"],
+            path: "Tests/LGTMTests"
         )
     ]
 )

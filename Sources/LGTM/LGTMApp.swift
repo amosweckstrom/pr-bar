@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct PRBarApp: App {
+struct LGTMApp: App {
     @StateObject private var state = AppState()
 
     var body: some Scene {

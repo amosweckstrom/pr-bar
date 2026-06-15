@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# Builds PRBar as a release binary, assembles a proper .app bundle around it,
+# Builds LGTM as a release binary, assembles a proper .app bundle around it,
 # and ad-hoc code-signs it. Pass --install to also copy it into /Applications.
 #
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP_NAME="PR Bar"
-EXECUTABLE="PRBar"
-BUNDLE_ID="com.amosweckstrom.pr-bar"
+APP_NAME="LGTM"
+EXECUTABLE="LGTM"
+BUNDLE_ID="com.amosweckstrom.lgtm"
 BUILD_DIR=".build/release"
 APP_DIR="build/${APP_NAME}.app"
 CONTENTS="${APP_DIR}/Contents"
@@ -27,7 +27,7 @@ printf 'APPL????' > "${CONTENTS}/PkgInfo"
 
 echo "==> Ad-hoc code signing"
 codesign --force --options runtime \
-    --entitlements "bundle/PRBar.entitlements" \
+    --entitlements "bundle/LGTM.entitlements" \
     --sign - \
     "${APP_DIR}"
 

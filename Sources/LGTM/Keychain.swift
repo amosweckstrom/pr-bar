@@ -3,7 +3,7 @@ import Security
 
 /// Minimal Keychain wrapper for storing the GitHub PAT as a generic password.
 enum Keychain {
-    private static let service = "com.amosweckstrom.pr-bar"
+    private static let service = "com.amosweckstrom.lgtm"
     private static let account = "github-pat"
 
     static func save(token: String) {

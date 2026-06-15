@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Settings / onboarding panel in GitHub Primer style: bold section headers,
 /// bordered cards, Primer-styled inputs and buttons.
@@ -16,6 +17,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 tokenSection
                 reposSection
+                aiReviewSection
                 optionsSection
             }
             .padding(14)
@@ -75,7 +77,11 @@ struct SettingsView: View {
                 } else {
                     VStack(spacing: 5) {
                         ForEach(state.repos) { repo in
-                            RepoRow(repo: repo) { state.removeRepo(repo) }
+                            RepoRow(
+                                repo: repo,
+                                onDelete: { state.removeRepo(repo) },
+                                onSetPath: { state.setLocalPath($0, for: repo) }
+                            )
                         }
                     }
                 }
@@ -102,6 +108,64 @@ struct SettingsView: View {
         state.addRepo(owner: newOwner, name: newName)
         newOwner = ""
         newName = ""
+    }
+
+    // MARK: AI review
+
+    private var aiReviewSection: some View {
+        SettingsSection(title: "AI review", icon: "sparkles") {
+            VStack(alignment: .leading, spacing: 11) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Agent")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(p.fg)
+                    Picker("", selection: Binding(
+                        get: { state.agentID },
+                        set: { state.agentID = $0 }
+                    )) {
+                        ForEach(Agents.known) { agent in
+                            Text(agent.name).tag(agent.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
+                    .tint(p.accent)
+
+                    if state.agentID == Agents.customID {
+                        PrimerField {
+                            TextField("e.g. aider --message", text: Binding(
+                                get: { state.customAgentCommand },
+                                set: { state.customAgentCommand = $0 }
+                            ))
+                        }
+                        Text("The PR review prompt is appended as the final argument.")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(p.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Open in")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(p.fg)
+                    Picker("", selection: Binding(
+                        get: { state.terminalBundleID },
+                        set: { state.terminalBundleID = $0 }
+                    )) {
+                        ForEach(Terminals.installed()) { term in
+                            Text(term.name).tag(term.bundleID)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
+                    .tint(p.accent)
+                }
+            }
+            .padding(11)
+        }
     }
 
     // MARK: Options
@@ -174,31 +238,79 @@ private struct RepoRow: View {
     @Environment(\.primer) private var p
     let repo: TrackedRepo
     let onDelete: () -> Void
+    let onSetPath: (String?) -> Void
     @State private var hovering = false
 
+    private var hasPath: Bool { repo.localPath?.isEmpty == false }
+
     var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "shippingbox").font(.system(size: 10)).foregroundStyle(p.muted)
-            Text(repo.slug)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(p.fg)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 4)
-            Button(action: onDelete) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(hovering ? AnyShapeStyle(p.danger) : AnyShapeStyle(p.muted))
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 7) {
+                Image(systemName: "shippingbox").font(.system(size: 10)).foregroundStyle(p.muted)
+                Text(repo.slug)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(p.fg)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                Button(action: onDelete) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(hovering ? AnyShapeStyle(p.danger) : AnyShapeStyle(p.muted))
+                }
+                .buttonStyle(.plain)
+                .help("Stop tracking")
             }
-            .buttonStyle(.plain)
-            .help("Stop tracking")
+
+            // Local clone path — needed for "Address review comments with AI".
+            HStack(spacing: 6) {
+                Image(systemName: hasPath ? "folder.fill" : "folder.badge.questionmark")
+                    .font(.system(size: 9))
+                    .foregroundStyle(hasPath ? p.success : p.muted)
+                Text(hasPath ? abbreviate(repo.localPath!) : "No local path set")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(hasPath ? p.muted : p.muted.opacity(0.8))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                Button(hasPath ? "Change" : "Set path", action: chooseFolder)
+                    .buttonStyle(PrimerButton(role: .normal))
+                if hasPath {
+                    Button(action: { onSetPath(nil) }) {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                    }
+                    .buttonStyle(PrimerButton(role: .normal))
+                    .help("Clear path")
+                }
+            }
         }
         .padding(.horizontal, 9)
-        .padding(.vertical, 6)
+        .padding(.vertical, 7)
         .background(p.bg)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(p.border, lineWidth: 1))
         .onHover { hovering = $0 }
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use This Folder"
+        panel.message = "Select your local clone of \(repo.slug)"
+        if let current = repo.localPath, !current.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: current)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            onSetPath(url.path)
+        }
+    }
+
+    /// Shorten an absolute path for display, collapsing the home dir to `~`.
+    private func abbreviate(_ path: String) -> String {
+        (path as NSString).abbreviatingWithTildeInPath
     }
 }
 

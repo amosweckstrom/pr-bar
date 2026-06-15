@@ -42,8 +42,8 @@ struct MenuView: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    if !state.respondedPRs.isEmpty {
-                        YourPRsGroup(items: state.respondedPRs)
+                    if !state.myPRs.isEmpty {
+                        YourPRsGroup(items: state.myPRs)
                     }
                     ForEach(state.results) { repoResult in
                         RepoGroup(repoResult: repoResult)
@@ -51,7 +51,7 @@ struct MenuView: View {
                 }
                 .padding(.vertical, 12)
             }
-            .frame(maxHeight: 600)
+            .frame(minHeight: 360, maxHeight: 640)
         }
     }
 }
@@ -66,7 +66,7 @@ private struct HeaderBar: View {
     var body: some View {
         HStack(spacing: 8) {
             LogoMark()
-            Text("PR Bar")
+            Text("LGTM")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(p.fg)
 
@@ -316,19 +316,55 @@ private struct RepoPRRow: View {
                         .font(.system(size: 12))
                         .foregroundStyle(p.muted)
                         .monospacedDigit()
+                    Avatar(url: pr.authorAvatarURL)
                     Text("@\(pr.author)")
                         .font(.system(size: 12))
                         .foregroundStyle(p.muted)
                     if pr.reviewRequestedFromMe {
                         LabelPill(text: "review requested", color: p.accent)
-                    } else if let label = pr.reviewState.label {
-                        LabelPill(text: label, color: pr.reviewState.color(p),
-                                  leadingSymbol: pr.reviewState == .approved ? "checkmark" : nil)
+                        if let at = pr.reviewRequestedAt {
+                            Text(relativeAge(at))
+                                .font(.system(size: 11))
+                                .foregroundStyle(p.muted)
+                                .help("Review requested \(at.formatted(date: .abbreviated, time: .shortened))")
+                        }
+                    } else {
+                        LabelPill(text: pr.displayReviewState.label,
+                                  color: pr.displayReviewState.color(p),
+                                  leadingSymbol: pr.displayReviewState.leadingSymbol)
                     }
                 }
             }
             Spacer(minLength: 0)
+            ReviewWithAIButton(pr: pr)
         }
+    }
+}
+
+/// Trailing row action: hand this PR to Claude Code for a guided, one-file-at-a-time review.
+private struct ReviewWithAIButton: View {
+    @EnvironmentObject var state: AppState
+    @Environment(\.primer) private var p
+    let pr: PullRequest
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            let invocation = Agents.invocation(for: state.agentID, customCommand: state.customAgentCommand)
+                ?? Agents.known.first { $0.id == Agents.defaultID }?.command ?? "claude"
+            AIReview.start(pr: pr, terminalBundleID: state.terminalBundleID, agentInvocation: invocation)
+        } label: {
+            Image(systemName: "sparkles")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(hovering ? p.accent : p.muted)
+                .frame(width: 22, height: 22)
+                .background(hovering ? p.canvas : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Review with AI")
     }
 }
 
@@ -336,13 +372,16 @@ private struct MyPRRow: View {
     @Environment(\.primer) private var p
     let item: AttentionPR
     private var pr: PullRequest { item.pr }
-    private var approved: Bool { pr.reviewState == .approved }
+
+    // Same source of truth as every other row, so this PR renders identically
+    // here and in the repo list below.
+    private var display: DisplayReviewState { pr.displayReviewState }
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
-            Image(systemName: approved ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+            Image(systemName: display.icon)
                 .font(.system(size: 12))
-                .foregroundStyle(approved ? p.success : p.danger)
+                .foregroundStyle(display.color(p))
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 4) {
                 Text(pr.title)
@@ -359,13 +398,58 @@ private struct MyPRRow: View {
                         .foregroundStyle(p.muted)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    LabelPill(text: approved ? "approved" : "changes requested",
-                              color: approved ? p.success : p.danger,
-                              leadingSymbol: approved ? "checkmark" : nil)
+                    LabelPill(text: display.label, color: display.color(p),
+                              leadingSymbol: display.leadingSymbol)
                 }
             }
             Spacer(minLength: 0)
+            AddressCommentsButton(item: item)
         }
+    }
+}
+
+/// Trailing action on your own PRs: open an agent session that walks the PR's
+/// review comments one at a time (via the `git-comments` skill) in a checkout.
+private struct AddressCommentsButton: View {
+    @EnvironmentObject var state: AppState
+    @Environment(\.primer) private var p
+    let item: AttentionPR
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            guard item.repo.localPath?.isEmpty == false else {
+                promptForPath()
+                return
+            }
+            let invocation = Agents.invocation(for: state.agentID, customCommand: state.customAgentCommand)
+                ?? Agents.known.first { $0.id == Agents.defaultID }?.command ?? "claude"
+            AIReview.startComments(
+                pr: item.pr, repo: item.repo,
+                terminalBundleID: state.terminalBundleID,
+                agentInvocation: invocation)
+        } label: {
+            Image(systemName: "wand.and.stars")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(hovering ? p.accent : p.muted)
+                .frame(width: 22, height: 22)
+                .background(hovering ? p.canvas : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Address review comments with AI")
+    }
+
+    private func promptForPath() {
+        let alert = NSAlert()
+        alert.messageText = "Set a local path for \(item.repo.slug)"
+        alert.informativeText = "To address review comments, LGTM opens a git worktree off your "
+            + "local clone of this repo. Add its path in Settings → Repositories first."
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 }
 
@@ -380,6 +464,33 @@ private struct StateIcon: View {
             .symbolEffect(.pulse, options: .repeating, isActive: status == .pending)
             .help(status.help)
             .frame(width: 14, alignment: .center)
+    }
+}
+
+/// A small circular author avatar. Falls back to a person glyph while loading
+/// or when no avatar URL is available.
+private struct Avatar: View {
+    @Environment(\.primer) private var p
+    let url: String?
+    var size: CGFloat = 16
+
+    var body: some View {
+        AsyncImage(url: url.flatMap { URL(string: $0) }) { phase in
+            if case .success(let image) = phase {
+                image.resizable().scaledToFill()
+            } else {
+                Circle()
+                    .fill(p.canvas)
+                    .overlay(
+                        Image(systemName: "person.fill")
+                            .font(.system(size: size * 0.55))
+                            .foregroundStyle(p.muted)
+                    )
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(p.border, lineWidth: 0.5))
     }
 }
 
@@ -498,7 +609,7 @@ private struct FooterBar: View {
             }
             .buttonStyle(.plain)
             .onHover { hovering = $0 }
-            .help("Quit PR Bar")
+            .help("Quit LGTM")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -514,4 +625,20 @@ private struct CompactLabel: LabelStyle {
 
 private func open(_ url: String) {
     if let u = URL(string: url) { NSWorkspace.shared.open(u) }
+}
+
+/// Compact relative age, e.g. "just now", "5m ago", "3h ago", "2d ago".
+private func relativeAge(_ date: Date) -> String {
+    let mins = Int(max(0, Date().timeIntervalSince(date)) / 60)
+    if mins < 1 { return "just now" }
+    if mins < 60 { return "\(mins)m ago" }
+    let hrs = mins / 60
+    if hrs < 24 { return "\(hrs)h ago" }
+    let days = hrs / 24
+    if days < 7 { return "\(days)d ago" }
+    let weeks = days / 7
+    if weeks < 5 { return "\(weeks)w ago" }
+    let months = days / 30
+    if months < 12 { return "\(months)mo ago" }
+    return "\(days / 365)y ago"
 }

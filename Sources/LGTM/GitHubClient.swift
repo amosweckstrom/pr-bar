@@ -26,7 +26,7 @@ enum GitHubError: LocalizedError {
 /// Talks to the GitHub GraphQL API. One query per repo returns everything a
 /// menu row needs: author, review decision, requested reviewers, and the CI
 /// rollup for the head commit.
-struct GitHubClient {
+struct GitHubClient: Sendable {
     let token: String
     private let endpoint = URL(string: "https://api.github.com/graphql")!
 
@@ -54,13 +54,25 @@ struct GitHubClient {
                 title
                 url
                 isDraft
-                author { login }
+                author { login avatarUrl(size: 40) }
                 reviewDecision
                 reviewRequests(first: 30) {
                   nodes {
                     requestedReviewer {
                       __typename
                       ... on User { login }
+                    }
+                  }
+                }
+                timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) {
+                  nodes {
+                    __typename
+                    ... on ReviewRequestedEvent {
+                      createdAt
+                      requestedReviewer {
+                        __typename
+                        ... on User { login }
+                      }
                     }
                   }
                 }
@@ -88,6 +100,7 @@ struct GitHubClient {
             throw GitHubError.decoding("missing repository.pullRequests")
         }
 
+        let iso = ISO8601DateFormatter()
         let parsed: [PullRequest] = nodes.compactMap { node in
             guard let id = node["id"] as? String,
                   let number = node["number"] as? Int,
@@ -95,7 +108,9 @@ struct GitHubClient {
                   let url = node["url"] as? String else {
                 return nil
             }
-            let author = (node["author"] as? [String: Any])?["login"] as? String ?? "ghost"
+            let authorNode = node["author"] as? [String: Any]
+            let author = authorNode?["login"] as? String ?? "ghost"
+            let authorAvatarURL = authorNode?["avatarUrl"] as? String
 
             let checkRollup = (((node["commits"] as? [String: Any])?["nodes"] as? [[String: Any]])?
                 .first?["commit"] as? [String: Any])?["statusCheckRollup"] as? [String: Any]
@@ -106,7 +121,19 @@ struct GitHubClient {
                 ($0["requestedReviewer"] as? [String: Any])?["login"] as? String
             }
             let requestedFromMe = requestedLogins.contains { $0.caseInsensitiveCompare(viewerLogin) == .orderedSame }
+            let hasPendingReviewRequest = !requestNodes.isEmpty
             let authoredByMe = author.caseInsensitiveCompare(viewerLogin) == .orderedSame
+
+            // Most recent "review requested from me" event, for the row's age label.
+            let timelineNodes = ((node["timelineItems"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
+            var requestedAt: Date?
+            for event in timelineNodes {
+                guard let login = (event["requestedReviewer"] as? [String: Any])?["login"] as? String,
+                      login.caseInsensitiveCompare(viewerLogin) == .orderedSame,
+                      let createdStr = event["createdAt"] as? String,
+                      let date = iso.date(from: createdStr) else { continue }
+                if requestedAt == nil || date > requestedAt! { requestedAt = date }
+            }
 
             return PullRequest(
                 id: id,
@@ -114,10 +141,13 @@ struct GitHubClient {
                 title: title,
                 url: url,
                 author: author,
+                authorAvatarURL: authorAvatarURL,
                 checkStatus: CheckStatus(rollup: rollupState),
                 reviewState: ReviewState(decision: node["reviewDecision"] as? String),
                 reviewRequestedFromMe: requestedFromMe,
-                authoredByMe: authoredByMe
+                authoredByMe: authoredByMe,
+                reviewRequestedAt: requestedAt,
+                hasPendingReviewRequest: hasPendingReviewRequest
             )
         }
 
@@ -137,7 +167,7 @@ struct GitHubClient {
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("pr-bar", forHTTPHeaderField: "User-Agent")
+        request.setValue("lgtm", forHTTPHeaderField: "User-Agent")
 
         let body: [String: Any] = ["query": query, "variables": variables]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

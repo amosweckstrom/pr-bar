@@ -53,7 +53,7 @@ extension EnvironmentValues {
 }
 
 enum Theme {
-    static let width: CGFloat = 380
+    static let width: CGFloat = 460
 }
 
 extension CheckStatus {
@@ -76,22 +76,35 @@ extension CheckStatus {
     }
 }
 
-extension ReviewState {
-    var label: String? {
+/// The one place a review state becomes pixels: label text, leading row icon,
+/// in-pill glyph, and color all live together so they can never drift apart.
+/// Every row consumes this; nothing else maps a review state to presentation.
+extension DisplayReviewState {
+    var label: String {
         switch self {
         case .approved: return "approved"
         case .changesRequested: return "changes requested"
-        case .reviewRequired: return "review required"
-        case .none: return nil
+        case .awaitingReview: return "awaiting review"
         }
     }
+
+    /// SF Symbol for the leading row icon, where a row shows a review-state icon.
+    var icon: String {
+        switch self {
+        case .approved: return "checkmark.circle.fill"
+        case .changesRequested: return "arrow.triangle.2.circlepath"
+        case .awaitingReview: return "clock"
+        }
+    }
+
+    /// Glyph shown inside the `LabelPill`, if any.
+    var leadingSymbol: String? { self == .approved ? "checkmark" : nil }
 
     func color(_ p: PrimerPalette) -> Color {
         switch self {
         case .approved: return p.success
         case .changesRequested: return p.danger
-        case .reviewRequired: return p.attention
-        case .none: return p.muted
+        case .awaitingReview: return p.muted
         }
     }
 }

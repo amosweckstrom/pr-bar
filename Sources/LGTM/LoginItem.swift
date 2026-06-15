@@ -20,7 +20,7 @@ enum LoginItem {
                 }
             }
         } catch {
-            NSLog("pr-bar: failed to update login item: \(error.localizedDescription)")
+            NSLog("lgtm: failed to update login item: \(error.localizedDescription)")
         }
     }
 }
