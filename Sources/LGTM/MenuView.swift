@@ -167,7 +167,7 @@ private struct RepoGroup: View {
                     ListGroup {
                         ForEach(Array(repoResult.pullRequests.enumerated()), id: \.element.id) { i, pr in
                             if i > 0 { RowDivider() }
-                            PRRowButton(url: pr.url) { RepoPRRow(pr: pr) }
+                            PRRowButton(url: pr.url) { RepoPRRow(pr: pr, repo: repoResult.repo) }
                         }
                     }
                 }
@@ -302,6 +302,7 @@ private struct PRRowButton<Content: View>: View {
 private struct RepoPRRow: View {
     @Environment(\.primer) private var p
     let pr: PullRequest
+    let repo: TrackedRepo
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -336,6 +337,7 @@ private struct RepoPRRow: View {
                 }
             }
             Spacer(minLength: 0)
+            OpenWorktreeButton(pr: pr, repo: repo)
             ReviewWithAIButton(pr: pr)
         }
     }
@@ -403,27 +405,29 @@ private struct MyPRRow: View {
                 }
             }
             Spacer(minLength: 0)
-            OpenWorktreeButton(item: item)
+            OpenWorktreeButton(pr: item.pr, repo: item.repo)
             AddressCommentsButton(item: item)
         }
     }
 }
 
-/// Trailing action on your own PRs: open the PR's worktree in VS Code, creating
-/// it (the same worktree "Address comments" uses) if it doesn't exist yet.
+/// Trailing action on any PR: open the PR's worktree in VS Code, creating it
+/// (the same worktree "Address comments" uses) if it doesn't exist yet. Works
+/// for your own PRs and others' alike — handy for checking out and running a PR.
 private struct OpenWorktreeButton: View {
     @EnvironmentObject var state: AppState
     @Environment(\.primer) private var p
-    let item: AttentionPR
+    let pr: PullRequest
+    let repo: TrackedRepo
     @State private var hovering = false
 
     var body: some View {
         Button {
-            guard item.repo.localPath?.isEmpty == false else {
-                promptForRepoPath(item.repo.slug)
+            guard repo.localPath?.isEmpty == false else {
+                promptForRepoPath(repo.slug)
                 return
             }
-            AIReview.openWorktree(pr: item.pr, repo: item.repo,
+            AIReview.openWorktree(pr: pr, repo: repo,
                                   terminalBundleID: state.terminalBundleID)
         } label: {
             Image(systemName: "chevron.left.forwardslash.chevron.right")
