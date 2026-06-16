@@ -25,6 +25,21 @@ cp "${BUILD_DIR}/${EXECUTABLE}" "${CONTENTS}/MacOS/${EXECUTABLE}"
 cp "bundle/Info.plist" "${CONTENTS}/Info.plist"
 printf 'APPL????' > "${CONTENTS}/PkgInfo"
 
+# The editor window's web panes (vendored, offline @pierre/trees + @pierre/diffs
+# bundles + HTML/CSS) ship as a plain folder in Contents/Resources. The app
+# loads them via Bundle.main.resourceURL; SwiftPM's Bundle.module is only used
+# for `swift run` during development. Keep this in sync with EditorAssets.swift.
+echo "==> Copying WebAssets"
+cp -R "Sources/LGTM/WebAssets" "${CONTENTS}/Resources/WebAssets"
+
+# Stamp the release version into the bundle when VERSION is provided
+# (e.g. from CI: VERSION=1.2.3). VERSION_BUILD defaults to 1.
+if [[ -n "${VERSION:-}" ]]; then
+    echo "==> Stamping version ${VERSION} (build ${VERSION_BUILD:-1})"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "${CONTENTS}/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION_BUILD:-1}" "${CONTENTS}/Info.plist"
+fi
+
 echo "==> Ad-hoc code signing"
 codesign --force --options runtime \
     --entitlements "bundle/LGTM.entitlements" \

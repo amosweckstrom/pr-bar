@@ -1,0 +1,65 @@
+/* Light, minimal aesthetic for the editor window's web panes — GitHub Primer
+   light palette, matching the rest of LGTM. */
+:root {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --muted: #656d76;
+  --border: #d0d7de;
+  --canvas-subtle: #f6f8fa;
+  --accent: #0969da;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.pane { height: 100%; overflow: hidden; }
+
+/* ---- Tree pane (@pierre/trees mounts here; it virtualizes + scrolls itself) ---- */
+.tree-host {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  padding: 4px 2px;
+  /* @pierre/trees theming via documented CSS-variable overrides on the host. */
+  --trees-bg-override: #ffffff;
+  --trees-fg-override: #1f2328;
+  --trees-accent-override: #0969da;
+  --trees-border-color-override: #d0d7de;
+  --trees-selected-bg-override: #ddf4ff;
+  --trees-selected-fg-override: #0550ae;
+  --trees-focus-ring-color-override: #0969da;
+  --trees-status-added-override: #1a7f37;
+  --trees-status-modified-override: #9a6700;
+  --trees-status-deleted-override: #cf222e;
+  --trees-status-renamed-override: #8250df;
+  --trees-status-untracked-override: #1a7f37;
+  --trees-status-ignored-override: #8c959f;
+}
+
+/* ---- Diff pane (@pierre/diffs mounts a <diffs-container> here) ---- */
+.diff-host {
+  height: 100%;
+  width: 100%;
+  overflow: auto;
+  background: var(--bg);
+}
+
+.lgtm-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 24px;
+  text-align: center;
+}

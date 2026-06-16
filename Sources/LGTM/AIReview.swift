@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Hands a pull request off to Claude Code for a guided, one-file-at-a-time
@@ -5,10 +6,20 @@ import Foundation
 /// interactive `claude` session seeded with it — the user stays in the loop and
 /// drives the pace; Claude explains each change and waits before moving on.
 enum AIReview {
+    /// Hands a PR off to the agent for a guided, one-file-at-a-time review,
+    /// running in the PR's git worktree (created off `repo.localPath` if needed)
+    /// so the agent reads — and can run — the actual checked-out code rather than
+    /// a fetch-only sandbox. Same worktree the `</>` and "address comments"
+    /// actions use.
     /// - Parameters:
     ///   - agentInvocation: command prefix (e.g. `claude`, `gemini -i`); the
     ///     prompt is appended to it as the final quoted argument.
-    static func start(pr: PullRequest, terminalBundleID: String, agentInvocation: String) {
+    /// - Returns: false if no local clone path is configured for the repo (nothing launched).
+    @discardableResult
+    static func start(pr: PullRequest, repo: TrackedRepo,
+                      terminalBundleID: String, agentInvocation: String) -> Bool {
+        guard let local = usableLocalPath(for: repo) else { return false }
+
         let prompt = makePrompt(url: pr.url)
         let tmp = FileManager.default.temporaryDirectory
         let promptURL = tmp.appendingPathComponent(
@@ -17,13 +28,14 @@ enum AIReview {
             try prompt.write(to: promptURL, atomically: true, encoding: .utf8)
         } catch {
             NSLog("lgtm: failed to write review prompt: \(error.localizedDescription)")
-            return
+            return false
         }
 
-        // Fresh working dir, then the chosen agent seeded with the prompt file's
-        // contents as the first interactive message.
-        let shellCmd = "cd \"$(mktemp -d)\" && \(agentInvocation) \"$(cat '\(promptURL.path)')\""
+        // Resolve (or create) the PR's worktree, then seed the agent in it.
+        let shellCmd = ensureWorktreeShell(pr: pr, repo: repo, local: local)
+            + " && \(agentInvocation) \"$(cat '\(promptURL.path)')\""
         Terminals.launch(bundleID: terminalBundleID, shellCommand: shellCmd)
+        return true
     }
 
     /// Hands one of the user's OWN pull requests — one a reviewer has responded
@@ -58,7 +70,7 @@ enum AIReview {
 
     /// Single launchability predicate for the worktree-backed actions: the
     /// repo's configured local clone path, trimmed, or nil when none is set.
-    /// `startComments` and `openWorktree` return false exactly when this is nil
+    /// `startComments` and `openInAppEditor` return false exactly when this is nil
     /// (nothing launched), so the UI can prompt the user to set a path.
     private static func usableLocalPath(for repo: TrackedRepo) -> String? {
         guard let trimmed = repo.localPath?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -74,37 +86,84 @@ enum AIReview {
         Worktrees.path(for: pr, in: repo)
     }
 
-    /// Opens the PR's worktree in VS Code, creating it the same way
-    /// `startComments` does when it doesn't exist yet — so both actions always
-    /// share ONE worktree. If the conventional worktree already exists we open it
-    /// directly (no terminal); otherwise we resolve/create it in a terminal
-    /// (visible progress) and open VS Code on the resolved `$TARGET` when done.
+    /// Opens the PR's worktree in LGTM's own 3-pane editor window (tree + diff +
+    /// terminal). Ensures the worktree exists first — fast path if the
+    /// conventional dir is already there, otherwise resolves/creates it headlessly
+    /// (no terminal) and opens the window on the resolved `$TARGET`. Failures
+    /// surface as an alert.
     /// - Returns: false if no local clone path is configured for the repo.
+    @MainActor
     @discardableResult
-    static func openWorktree(pr: PullRequest, repo: TrackedRepo,
-                             terminalBundleID: String) -> Bool {
+    static func openInAppEditor(pr: PullRequest, repo: TrackedRepo) -> Bool {
         guard let local = usableLocalPath(for: repo) else { return false }
 
         let existing = worktreeURL(pr: pr, repo: repo)
         if FileManager.default.fileExists(atPath: existing.path) {
-            openInVSCode(path: existing.path)
+            EditorWindowController.show(worktree: existing, repo: repo, pr: pr)
             return true
         }
 
+        // Resolve/create the worktree headlessly; the shell prints the resolved
+        // path on a marker line so we can open the window on exactly that dir.
         let shellCmd = ensureWorktreeShell(pr: pr, repo: repo, local: local)
-            + " && open -b com.microsoft.VSCode \"$TARGET\""
-        Terminals.launch(bundleID: terminalBundleID, shellCommand: shellCmd)
+            + " && printf '\\n__LGTM_TARGET__%s\\n' \"$TARGET\""
+        runHeadlessResolvingTarget(shellCmd,
+                                   failureContext: "open the worktree for PR #\(pr.number)") { target in
+            guard let target else { return }   // failure already alerted
+            EditorWindowController.show(worktree: URL(fileURLWithPath: target), repo: repo, pr: pr)
+        }
         return true
     }
 
-    private static func openInVSCode(path: String) {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        proc.arguments = ["-b", "com.microsoft.VSCode", path]
-        do {
-            try proc.run()
-        } catch {
-            NSLog("lgtm: failed to open VS Code: \(error.localizedDescription)")
+    /// Like `runHeadless`, but parses the trailing `__LGTM_TARGET__<path>` marker
+    /// from stdout and hands the resolved worktree path back on the main actor
+    /// (nil on failure, after alerting).
+    private static func runHeadlessResolvingTarget(
+        _ shellCommand: String, failureContext: String,
+        completion: @escaping @MainActor (String?) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            proc.arguments = ["-lc", shellCommand]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = pipe
+            do {
+                try proc.run()
+            } catch {
+                presentFailure(context: failureContext, detail: error.localizedDescription)
+                Task { @MainActor in completion(nil) }
+                return
+            }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            if proc.terminationStatus != 0 {
+                presentFailure(context: failureContext, detail: output)
+                Task { @MainActor in completion(nil) }
+                return
+            }
+            let marker = "__LGTM_TARGET__"
+            let target = output.split(separator: "\n")
+                .last(where: { $0.hasPrefix(marker) })
+                .map { String($0.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces) }
+            Task { @MainActor in completion(target) }
+        }
+    }
+
+    private static func presentFailure(context: String, detail: String) {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "LGTM couldn’t \(context)."
+            let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            alert.informativeText = trimmed.isEmpty
+                ? "The worktree command failed. Check that git and gh are installed and authenticated, and that the repo's local path is correct."
+                : String(trimmed.suffix(1500))
+            alert.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
         }
     }
 

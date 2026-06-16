@@ -338,7 +338,7 @@ private struct RepoPRRow: View {
             }
             Spacer(minLength: 0)
             OpenWorktreeButton(pr: pr, repo: repo)
-            ReviewWithAIButton(pr: pr)
+            ReviewWithAIButton(pr: pr, repo: repo)
         }
     }
 }
@@ -348,12 +348,17 @@ private struct ReviewWithAIButton: View {
     @EnvironmentObject var state: AppState
     @Environment(\.primer) private var p
     let pr: PullRequest
+    let repo: TrackedRepo
     @State private var hovering = false
 
     var body: some View {
         Button {
             let invocation = Agents.resolvedInvocation(for: state.agentID, customCommand: state.customAgentCommand)
-            AIReview.start(pr: pr, terminalBundleID: state.terminalBundleID, agentInvocation: invocation)
+            if !AIReview.start(pr: pr, repo: repo,
+                               terminalBundleID: state.terminalBundleID,
+                               agentInvocation: invocation) {
+                promptForRepoPath(repo.slug)
+            }
         } label: {
             Image(systemName: "sparkles")
                 .font(.system(size: 12, weight: .semibold))
@@ -422,8 +427,7 @@ private struct OpenWorktreeButton: View {
 
     var body: some View {
         Button {
-            if !AIReview.openWorktree(pr: pr, repo: repo,
-                                      terminalBundleID: state.terminalBundleID) {
+            if !AIReview.openInAppEditor(pr: pr, repo: repo) {
                 promptForRepoPath(repo.slug)
             }
         } label: {
@@ -437,7 +441,7 @@ private struct OpenWorktreeButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("Open worktree in VS Code")
+        .help("Open worktree in editor window")
     }
 }
 

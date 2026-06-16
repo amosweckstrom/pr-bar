@@ -1,0 +1,24 @@
+cask "lgtm" do
+  version "__VERSION__"
+  sha256 "__SHA256__"
+
+  url "https://github.com/amosweckstrom/lgtm/releases/download/v#{version}/LGTM.zip"
+  name "LGTM"
+  desc "Menu bar app for tracking GitHub pull requests awaiting your review"
+  homepage "https://github.com/amosweckstrom/lgtm"
+
+  depends_on macos: ">= :sonoma"
+
+  app "LGTM.app"
+
+  # The app is ad-hoc signed, not notarized, so strip the download quarantine
+  # to avoid the Gatekeeper "unidentified developer" prompt on first launch.
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/LGTM.app"]
+  end
+
+  zap trash: [
+    "~/Library/Preferences/com.amosweckstrom.lgtm.plist",
+  ]
+end

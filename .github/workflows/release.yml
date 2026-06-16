@@ -1,0 +1,75 @@
+name: Release
+
+# Tag a commit `vX.Y.Z` and push it to cut a release:
+#   git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16 (Swift 6 toolchain)
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Derive version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build .app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_BUILD: ${{ github.run_number }}
+        run: scripts/build-app.sh
+
+      - name: Package LGTM.zip
+        id: package
+        run: |
+          ditto -c -k --keepParent build/LGTM.app build/LGTM.zip
+          echo "sha256=$(shasum -a 256 build/LGTM.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/LGTM.zip
+          generate_release_notes: true
+          body: |
+            ### Install via Homebrew
+
+            ```sh
+            brew install --cask amosweckstrom/tap/lgtm
+            ```
+
+            SHA-256 (`LGTM.zip`): `${{ steps.package.outputs.sha256 }}`
+
+      # Auto-update the Homebrew cask in your tap repo.
+      # Skipped unless the `TAP_REPO` variable (e.g. amosweckstrom/homebrew-tap)
+      # and the `TAP_GITHUB_TOKEN` secret (a PAT with `contents:write` on the tap)
+      # are configured in this repo's Settings → Secrets and variables → Actions.
+      - name: Bump Homebrew cask
+        if: vars.TAP_REPO != ''
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          TAP_REPO: ${{ vars.TAP_REPO }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${TAP_REPO}.git" tap
+          mkdir -p tap/Casks
+          sed -e "s/__VERSION__/${VERSION}/g" -e "s/__SHA256__/${SHA256}/g" \
+            dist/lgtm.rb.template > tap/Casks/lgtm.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/lgtm.rb
+          git commit -m "lgtm ${VERSION}"
+          git push

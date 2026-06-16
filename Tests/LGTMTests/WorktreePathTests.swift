@@ -31,8 +31,8 @@ final class WorktreePathTests: XCTestCase {
         XCTAssertEqual(
             Worktrees.path(for: pull, in: repo).lastPathComponent,
             Worktrees.dirName(for: pull, in: repo))
-        // Concrete tail: openWorktree's fast-path existence check must hit exactly
-        // the directory the bash slow-path creates.
+        // Concrete tail: openInAppEditor's fast-path existence check must hit
+        // exactly the directory the bash slow-path creates.
         XCTAssertTrue(
             Worktrees.path(for: pull, in: repo).path
                 .hasSuffix("/.lgtm/worktrees/octocat-hello-world-pr-42"))

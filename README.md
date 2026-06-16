@@ -13,8 +13,17 @@ browser.
 You can also hand a PR straight to a terminal coding agent (Claude Code, Codex,
 Gemini CLI, Cursor Agent, or a custom command): it opens your terminal of choice
 seeded with a prompt that walks the diff one change at a time. For your own PRs,
-the agent opens a git worktree off your local clone and addresses the review
-comments in place.
+the agent addresses the review comments in place. Every agent action — and the
+`</>` button — runs in a dedicated git worktree off your local clone, so they
+all share one checkout per PR.
+
+Clicking `</>` opens a built-in **review window** for the PR: a resizable
+three-pane mini editor — a file tree with git-status badges on the left, a
+syntax-highlighted split diff in the middle, and a real terminal (your login
+shell, in the worktree) on the right. The tree and diff panes are rendered by
+[trees.software](https://trees.software) and [diffs.com](https://diffs.com)
+(vendored into the app, fully offline); the terminal is native
+[SwiftTerm](https://github.com/migueldeicaza/SwiftTerm).
 
 ## Features
 
@@ -25,6 +34,8 @@ comments in place.
 - Auto-refreshes every 3 minutes (and on open); manual refresh button
 - Hand a PR to a terminal coding agent for a guided, one-change-at-a-time review
 - Address review comments on your own PRs via an auto-created git worktree
+- Open any PR in a built-in 3-pane review window (tree + diff + terminal) via
+  the `</>` button — resizable, light, and fully offline
 - Pluggable agent (Claude Code, Codex, Gemini CLI, Cursor Agent, or custom) and
   terminal (Terminal, iTerm, Ghostty, WezTerm, kitty, Alacritty)
 - GitHub token stored in the macOS Keychain
@@ -52,6 +63,49 @@ comments in place.
 Because the app is ad-hoc signed (not notarized), the first launch may need a
 right-click → Open to get past Gatekeeper.
 
+## Install via Homebrew
+
+Once a release is published (see below):
+
+```sh
+brew install --cask amosweckstrom/tap/lgtm
+```
+
+The cask strips the download quarantine on install, so no right-click → Open is
+needed.
+
+## Releasing
+
+Releases are automated by `.github/workflows/release.yml`. Tag a commit and push:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+CI then builds `LGTM.app` (stamping the version from the tag), zips it, and
+publishes a GitHub Release with `LGTM.zip` attached.
+
+To auto-update the Homebrew cask on each release, do this one-time setup:
+
+1. Create a tap repo named `homebrew-tap` (e.g. `amosweckstrom/homebrew-tap`).
+2. In this repo's **Settings → Secrets and variables → Actions**, add:
+   - Variable `TAP_REPO` = `amosweckstrom/homebrew-tap`
+   - Secret `TAP_GITHUB_TOKEN` = a PAT with `contents:write` on the tap repo
+3. The release job fills `dist/lgtm.rb.template` with the version + SHA-256 and
+   commits `Casks/lgtm.rb` to the tap.
+
+If `TAP_REPO` is unset, the release still publishes; only the cask bump is
+skipped (the SHA-256 is printed in the release notes so you can update the cask
+by hand).
+
+> **TODO: notarization + auto-update.** The current cask strips the download
+> quarantine because the app is only ad-hoc signed — fine for a team, but not
+> for zero-trust public distribution. To go fully frictionless: get an Apple
+> Developer account ($99/yr), sign with a Developer ID certificate, notarize and
+> staple in the release workflow (drop the `xattr` postflight from the cask
+> once done), and add [Sparkle](https://sparkle-project.org) for in-app
+> auto-updates fed by an appcast generated per release.
+
 ## First run
 
 1. Launch **LGTM** — a checklist icon appears in the menu bar.
@@ -74,12 +128,31 @@ Sources/LGTM/
   Theme.swift        – GitHub Primer palette (light/dark) + state colors
   MenuView.swift     – dropdown UI (Primer list-groups + label pills)
   SettingsView.swift – token + repo + AI review management (Primer sections)
-  AIReview.swift     – hands a PR to a coding agent; review + comments prompts
+  AIReview.swift     – hands a PR to a coding agent; review + comments prompts;
+                       opens the editor window (openInAppEditor)
   Agents.swift       – known coding agents and their CLI invocations
   Terminals.swift    – terminal detection + launching a shell command
+  WorktreeData.swift – git snapshot of a worktree: file tree, status, per-file diff
+  EditorWindowController.swift – the 3-pane review window + tree↔diff coordinator
+  EditorWebPane.swift          – WKWebView host + app:// scheme handler + JS bridge
+  EditorTerminalPane.swift     – SwiftTerm terminal pane (login shell in worktree)
+  WebAssets/         – vendored, offline web panes (copied into the .app)
+    tree.html / diff.html / style.css
+    vendor/{trees,diffs}.bundle.js – esbuild output (committed; built from web/)
+web/                 – npm + esbuild project that builds the WebAssets bundles
 bundle/
   Info.plist         – app bundle metadata (LSUIElement)
   LGTM.entitlements  – network + non-sandboxed
-Tests/LGTMTests/     – unit tests (e.g. review-state display)
-scripts/build-app.sh – builds and signs the .app bundle
+Tests/LGTMTests/     – unit tests (review-state display, editor bridge contract)
+scripts/build-app.sh – builds and signs the .app bundle (copies WebAssets)
+```
+
+### Rebuilding the web panes
+
+The tree/diff panes are vendored as offline JS bundles under
+`Sources/LGTM/WebAssets/vendor/` (committed). To rebuild them after changing
+`web/src/*`:
+
+```sh
+cd web && npm install && npm run build
 ```
