@@ -233,6 +233,9 @@ final class AppState: ObservableObject {
         results = ordered
         lastError = ordered.compactMap(\.error).first
         lastUpdated = Date()
+
+        // Reap worktrees whose PR has since merged/closed (background, safe).
+        Worktrees.cleanupClosed()
     }
 
     private func persistRepos() {
