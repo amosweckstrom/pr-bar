@@ -49,19 +49,75 @@ enum AIReview {
             return false
         }
 
-        // Open the PR branch in a working tree off the user's clone, then seed
-        // the agent. Order matters: if the branch is ALREADY checked out
-        // somewhere (the main clone or a prior worktree) we reuse that directory,
-        // because git refuses to check one branch out in two worktrees. Only
-        // when it's checked out nowhere do we add a dedicated worktree — that
-        // keeps the main checkout's current branch untouched in the common case.
+        // Resolve (or create) the PR's worktree, then seed the agent in it.
+        let shellCmd = ensureWorktreeShell(pr: pr, repo: repo, local: local)
+            + " && \(agentInvocation) \"$(cat '\(promptURL.path)')\""
+        Terminals.launch(bundleID: terminalBundleID, shellCommand: shellCmd)
+        return true
+    }
+
+    /// Conventional path of the dedicated worktree LGTM creates for a PR:
+    /// `~/.lgtm/worktrees/<owner>-<name>-pr-<number>`. The branch may instead be
+    /// checked out in the main clone or a prior worktree — `ensureWorktreeShell`
+    /// resolves that at launch; this is only the default creation location.
+    static func worktreeURL(pr: PullRequest, repo: TrackedRepo) -> URL {
+        let slug = "\(repo.owner)-\(repo.name)"
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".lgtm/worktrees/\(slug)-pr-\(pr.number)")
+    }
+
+    /// Opens the PR's worktree in VS Code, creating it the same way
+    /// `startComments` does when it doesn't exist yet — so both actions always
+    /// share ONE worktree. If the conventional worktree already exists we open it
+    /// directly (no terminal); otherwise we resolve/create it in a terminal
+    /// (visible progress) and open VS Code on the resolved `$TARGET` when done.
+    /// - Returns: false if no local clone path is configured for the repo.
+    @discardableResult
+    static func openWorktree(pr: PullRequest, repo: TrackedRepo,
+                             terminalBundleID: String) -> Bool {
+        guard let local = repo.localPath, !local.isEmpty else { return false }
+
+        let existing = worktreeURL(pr: pr, repo: repo)
+        if FileManager.default.fileExists(atPath: existing.path) {
+            openInVSCode(path: existing.path)
+            return true
+        }
+
+        let shellCmd = ensureWorktreeShell(pr: pr, repo: repo, local: local)
+            + " && open -b com.microsoft.VSCode \"$TARGET\""
+        Terminals.launch(bundleID: terminalBundleID, shellCommand: shellCmd)
+        return true
+    }
+
+    private static func openInVSCode(path: String) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        proc.arguments = ["-b", "com.microsoft.VSCode", path]
+        do {
+            try proc.run()
+        } catch {
+            NSLog("lgtm: failed to open VS Code: \(error.localizedDescription)")
+        }
+    }
+
+    /// Builds a shell snippet that leaves the shell cwd at the PR's worktree
+    /// (creating it off `local` if needed), with `$TARGET` set to its path, and
+    /// runs the per-repo setup hook. Callers append `&& <action>`. Shared by the
+    /// "address comments" and "open in VS Code" actions so they always use the
+    /// SAME worktree. Order matters: if the branch is ALREADY checked out
+    /// somewhere (the main clone or a prior worktree) we reuse that directory,
+    /// because git refuses to check one branch out in two worktrees. Only when it
+    /// is checked out nowhere do we add a dedicated worktree — keeping the main
+    /// checkout's current branch untouched in the common case.
+    private static func ensureWorktreeShell(pr: PullRequest, repo: TrackedRepo,
+                                            local: String) -> String {
         let n = pr.number
         let slug = "\(repo.owner)-\(repo.name)"
         let wt = "$HOME/.lgtm/worktrees/\(slug)-pr-\(n)"
         // awk over `git worktree list --porcelain` to find where $BR is checked out.
         let findTree = "awk -v b=\"refs/heads/$BR\" '/^worktree /{wt=substr($0,10)} "
             + "$0==\"branch \"b{print wt; exit}'"
-        let shellCmd = "cd \"\(local)\" && git fetch origin --quiet && "
+        return "cd \"\(local)\" && git fetch origin --quiet && "
             + "BR=$(gh pr view \(n) --json headRefName -q .headRefName) && "
             + "TARGET=$(git worktree list --porcelain | \(findTree)) && "
             + "if [ -z \"$TARGET\" ]; then "
@@ -69,9 +125,11 @@ enum AIReview {
             +   "{ [ -d \"$TARGET\" ] || git worktree add --detach \"$TARGET\"; } && "
             +   "cd \"$TARGET\" && gh pr checkout \(n); "
             + "else echo \"[lgtm] '$BR' is already checked out at $TARGET — using it\" && cd \"$TARGET\"; fi && "
-            + "\(agentInvocation) \"$(cat '\(promptURL.path)')\""
-        Terminals.launch(bundleID: terminalBundleID, shellCommand: shellCmd)
-        return true
+            // Run a machine-local, per-repo setup hook if one exists (e.g. symlink
+            // env files, install deps). Non-fatal: a failing or missing hook must
+            // never block the action.
+            + "{ HOOK=\"$HOME/.lgtm/hooks/\(slug).sh\"; [ -x \"$HOOK\" ] && "
+            +   "echo \"[lgtm] running setup hook $HOOK\" && \"$HOOK\" \"$TARGET\"; true; }"
     }
 
     /// Self-contained prompt for the guided, one-at-a-time comment walkthrough.

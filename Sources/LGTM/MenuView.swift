@@ -403,8 +403,40 @@ private struct MyPRRow: View {
                 }
             }
             Spacer(minLength: 0)
+            OpenWorktreeButton(item: item)
             AddressCommentsButton(item: item)
         }
+    }
+}
+
+/// Trailing action on your own PRs: open the PR's worktree in VS Code, creating
+/// it (the same worktree "Address comments" uses) if it doesn't exist yet.
+private struct OpenWorktreeButton: View {
+    @EnvironmentObject var state: AppState
+    @Environment(\.primer) private var p
+    let item: AttentionPR
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            guard item.repo.localPath?.isEmpty == false else {
+                promptForRepoPath(item.repo.slug)
+                return
+            }
+            AIReview.openWorktree(pr: item.pr, repo: item.repo,
+                                  terminalBundleID: state.terminalBundleID)
+        } label: {
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(hovering ? p.accent : p.muted)
+                .frame(width: 22, height: 22)
+                .background(hovering ? p.canvas : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Open worktree in VS Code")
     }
 }
 
@@ -419,7 +451,7 @@ private struct AddressCommentsButton: View {
     var body: some View {
         Button {
             guard item.repo.localPath?.isEmpty == false else {
-                promptForPath()
+                promptForRepoPath(item.repo.slug)
                 return
             }
             let invocation = Agents.invocation(for: state.agentID, customCommand: state.customAgentCommand)
@@ -441,16 +473,19 @@ private struct AddressCommentsButton: View {
         .onHover { hovering = $0 }
         .help("Address review comments with AI")
     }
+}
 
-    private func promptForPath() {
-        let alert = NSAlert()
-        alert.messageText = "Set a local path for \(item.repo.slug)"
-        alert.informativeText = "To address review comments, LGTM opens a git worktree off your "
-            + "local clone of this repo. Add its path in Settings → Repositories first."
-        alert.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
-    }
+/// Shared by the per-PR worktree actions: nudge the user to configure a local
+/// clone path when one is missing (both actions open a git worktree off it).
+@MainActor
+private func promptForRepoPath(_ slug: String) {
+    let alert = NSAlert()
+    alert.messageText = "Set a local path for \(slug)"
+    alert.informativeText = "To open a git worktree for this PR, LGTM needs your "
+        + "local clone of this repo. Add its path in Settings → Repositories first."
+    alert.addButton(withTitle: "OK")
+    NSApp.activate(ignoringOtherApps: true)
+    alert.runModal()
 }
 
 /// CI status dot, GitHub-style filled circle; pulses while running.
