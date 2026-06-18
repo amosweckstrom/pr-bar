@@ -52,9 +52,17 @@ function setGitStatus(gitStatus) {
   }
 }
 
+/// Follow the native window appearance. The tree's colors come from the
+/// `--trees-*-override` CSS variables on `.tree-host` (see style.css), which the
+/// `.theme-dark` class redefines — so toggling the class restyles the tree.
+function setTheme(mode) {
+  document.documentElement.classList.toggle('theme-dark', mode === 'dark');
+}
+
 window.LGTM = Object.assign(window.LGTM || {}, {
   renderTree,
   setGitStatus,
+  setTheme,
   ready: true,
 });
 

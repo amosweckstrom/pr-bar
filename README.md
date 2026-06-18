@@ -12,10 +12,12 @@ browser.
 
 You can also hand a PR straight to a terminal coding agent (Claude Code, Codex,
 Gemini CLI, Cursor Agent, or a custom command): it opens your terminal of choice
-seeded with a prompt that walks the diff one change at a time. For your own PRs,
-the agent addresses the review comments in place. Every agent action — and the
-`</>` button — runs in a dedicated git worktree off your local clone, so they
-all share one checkout per PR.
+seeded with a prompt that walks the diff one change at a time. If you've set the
+repo's local clone path, the agent runs in a dedicated git worktree for the PR
+(real, checked-out code); if you haven't, it still launches and reviews the PR
+through `gh` — so "Review with AI" works on any PR, clone or not. For your own
+PRs, the agent addresses the review comments in a worktree you can push from. The
+`</>` button opens that same worktree, so they share one checkout per PR.
 
 Clicking `</>` opens a built-in **review window** for the PR: a resizable
 three-pane mini editor — a file tree with git-status badges on the left, a
@@ -28,14 +30,16 @@ shell, in the worktree) on the right. The tree and diff panes are rendered by
 ## Features
 
 - Tracks any number of `owner/repo` repositories (configurable in-app)
-- Badge = number of PRs where you're a requested reviewer
-- Per-PR: title, `#number`, author, CI rollup status, review decision
+- Badge = PRs awaiting your review, counting requests routed via a team you're on
+  (CODEOWNERS), not just direct ones — plus your own PRs with changes requested
+- Per-PR: title, `#number`, author, CI rollup status, review decision; drafts are
+  labelled and don't count toward the badge
 - Review-requested PRs sorted to the top of each repo
 - Auto-refreshes every 3 minutes (and on open); manual refresh button
 - Hand a PR to a terminal coding agent for a guided, one-change-at-a-time review
 - Address review comments on your own PRs via an auto-created git worktree
 - Open any PR in a built-in 3-pane review window (tree + diff + terminal) via
-  the `</>` button — resizable, light, and fully offline
+  the `</>` button — resizable, follows light/dark, and fully offline
 - Pluggable agent (Claude Code, Codex, Gemini CLI, Cursor Agent, or custom) and
   terminal (Terminal, iTerm, Ghostty, WezTerm, kitty, Alacritty)
 - GitHub token stored in the macOS Keychain
@@ -44,14 +48,17 @@ shell, in the worktree) on the right. The tree and diff panes are rendered by
 ## Requirements
 
 - macOS 14+
-- Swift toolchain (Command Line Tools or Xcode) for building. The UI is pure
-  SwiftUI with no third-party dependencies, styled after GitHub's Primer design
-  language and adapting to light/dark appearance.
+- Swift toolchain (Command Line Tools or Xcode) for building. The menu UI is pure
+  SwiftUI, styled after GitHub's Primer design language and adapting to light/dark.
+  The review window's terminal uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
+  and its tree/diff panes are vendored, fully-offline JS bundles — the only
+  third-party code.
 - A GitHub Personal Access Token with read access to the repos you track
   (classic: `repo` scope; fine-grained: read-only Pull requests + Contents)
 - For AI review: a terminal emulator and the CLI of your chosen coding agent
-  (e.g. `claude`) on your `PATH`. To address comments on your own PRs, a local
-  clone of the repo set in Settings.
+  (e.g. `claude`) on your `PATH`. Plain "Review with AI" needs no local clone; to
+  open the `</>` review window or address comments on your own PRs, set the repo's
+  local clone path in Settings.
 
 ## Build
 

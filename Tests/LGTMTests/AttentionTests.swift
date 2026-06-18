@@ -118,6 +118,20 @@ final class AttentionTests: XCTestCase {
         XCTAssertEqual(Attention.attentionTotal(in: results), 3)
     }
 
+    // menuBarBadgeCount = reviews owed + changes-requested responses, and EXCLUDES
+    // approved-but-unmerged PRs (which still count toward attentionTotal/the pill).
+    func testMenuBarBadgeCountExcludesApprovedResponses() {
+        let results = [
+            repo("o", "a", [
+                pr(number: 1, reviewState: .reviewRequired, authoredByMe: false, reviewRequestedFromMe: true), // owed
+                pr(number: 2, reviewState: .changesRequested),  // my move — counts toward the badge
+                pr(number: 3, reviewState: .approved),          // approved — excluded from the badge
+            ]),
+        ]
+        XCTAssertEqual(Attention.attentionTotal(in: results), 3)   // 1 owed + 2 responded
+        XCTAssertEqual(Attention.menuBarBadgeCount(in: results), 2) // 1 owed + 1 changes-requested
+    }
+
     // Empty results → empty lists and zero totals.
     func testEmptyResults() {
         let results: [RepoPRs] = []
@@ -125,5 +139,6 @@ final class AttentionTests: XCTestCase {
         XCTAssertTrue(Attention.respondedPRs(in: results).isEmpty)
         XCTAssertTrue(Attention.myPRs(in: results).isEmpty)
         XCTAssertEqual(Attention.attentionTotal(in: results), 0)
+        XCTAssertEqual(Attention.menuBarBadgeCount(in: results), 0)
     }
 }

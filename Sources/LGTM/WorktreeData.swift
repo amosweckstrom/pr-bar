@@ -27,6 +27,9 @@ enum WorktreeData {
         let paths: [String]
         /// path -> status, only for files that differ from `base`/HEAD.
         let status: [String: Status]
+        /// new path -> old path, for renamed files, so the diff can read the
+        /// "before" side from where the file actually lived at `base`.
+        let renames: [String: String]
     }
 
     /// What the diff pane needs for one file: the before/after text (nil when the
@@ -46,7 +49,7 @@ enum WorktreeData {
     /// remote's default branch and then to nil.
     static func snapshot(root: String, prNumber: Int) -> Snapshot {
         let base = resolveBase(root: root, prNumber: prNumber)
-        var status = statusMap(root: root, base: base)
+        var (status, renames) = statusMap(root: root, base: base)
 
         // Tree = tracked ∪ untracked(non-ignored) ∪ deleted (so deletions show).
         var paths = Set<String>()
@@ -62,18 +65,22 @@ enum WorktreeData {
             if isUntracked(root: root, path: p) { status[p] = .untracked }
         }
 
-        return Snapshot(root: root, base: base, paths: paths.sorted(), status: status)
+        return Snapshot(root: root, base: base, paths: paths.sorted(), status: status, renames: renames)
     }
 
     // MARK: - Per-file diff
 
     /// Old/new content for one file, relative to `base`. Reads the new side from
     /// the working tree (so uncommitted edits show) and the old side from `base`.
-    static func fileDiff(root: String, base: String?, path: String, status: Status) -> FileDiff {
+    /// For a renamed file, `oldPath` is where the file lived at `base`, so the
+    /// "before" side resolves correctly instead of looking absent (which made
+    /// renames render as 100% additions).
+    static func fileDiff(root: String, base: String?, path: String, status: Status,
+                         oldPath: String? = nil) -> FileDiff {
         let newData: Data? = status == .deleted ? nil : try? Data(contentsOf: fileURL(root, path))
         let oldData: Data? = {
             guard status != .added, let base else { return nil }
-            return gitData(["show", "\(base):\(path)"], root)
+            return gitData(["show", "\(base):\(oldPath ?? path)"], root)
         }()
 
         let binary = isBinary(oldData) || isBinary(newData)
@@ -108,12 +115,13 @@ enum WorktreeData {
         return ref.split(separator: "/").last.map(String.init)
     }
 
-    private static func statusMap(root: String, base: String?) -> [String: Status] {
+    private static func statusMap(root: String, base: String?) -> (status: [String: Status], renames: [String: String]) {
         var map: [String: Status] = [:]
+        var renames: [String: String] = [:]   // new path -> old path
         // Committed PR changes (base...HEAD): newline records, "<code>\t<path>".
         if let base {
             for line in lines(of: git(["diff", "--name-status", "\(base)...HEAD"], root)) {
-                ingestNameStatus(line, into: &map)
+                ingestNameStatus(line, into: &map, renames: &renames)
             }
         }
         // Uncommitted working-tree changes (override; they're what's on disk now):
@@ -122,23 +130,30 @@ enum WorktreeData {
             guard line.count >= 3 else { continue }
             let code = String(line.prefix(2))
             var path = String(line.dropFirst(3))
-            if let arrow = path.range(of: " -> ") { path = String(path[arrow.upperBound...]) }
+            if let arrow = path.range(of: " -> ") {
+                renames[String(path[arrow.upperBound...])] = String(path[..<arrow.lowerBound])
+                path = String(path[arrow.upperBound...])
+            }
             // Untracked dirs collapse to "dir/" in porcelain; the tree is built
             // from file paths (ls-files lists the files inside), so skip them.
             if path.hasSuffix("/") { continue }
             map[path] = porcelainStatus(code) ?? map[path]
         }
-        return map
+        return (map, renames)
     }
 
-    private static func ingestNameStatus(_ line: String, into map: inout [String: Status]) {
-        // "<code>\t<path>" — renames are "R<score>\t<old>\t<new>"; take the new path.
+    private static func ingestNameStatus(_ line: String, into map: inout [String: Status],
+                                         renames: inout [String: String]) {
+        // "<code>\t<path>" — renames are "R<score>\t<old>\t<new>"; take the new path
+        // and remember old→new so the diff can read the "before" side from `old`.
         let parts = line.split(separator: "\t")
         guard let code = parts.first?.first, let path = parts.last.map(String.init) else { return }
         switch code {
         case "A": map[path] = .added
         case "D": map[path] = .deleted
-        case "R": map[path] = .renamed
+        case "R":
+            map[path] = .renamed
+            if parts.count >= 3 { renames[path] = String(parts[1]) }
         default:  map[path] = .modified
         }
     }

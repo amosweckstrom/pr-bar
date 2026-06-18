@@ -94,10 +94,16 @@ struct PullRequest: Identifiable, Hashable, Codable {
     let authorAvatarURL: String?
     let checkStatus: CheckStatus
     let reviewState: ReviewState
-    /// True when the signed-in user is an explicitly requested reviewer.
-    let reviewRequestedFromMe: Bool
+    /// True when a review is requested from the signed-in user — directly OR via a
+    /// team they belong to. Set by the User-login decode and, authoritatively,
+    /// by the cross-repo `review-requested:@me` search merge (so team/CODEOWNERS
+    /// requests count too); hence `var`, flipped on during that merge.
+    var reviewRequestedFromMe: Bool
     /// True when the signed-in user opened this PR.
     let authoredByMe: Bool
+    /// True for draft PRs. Drafts aren't review-ready, so they're shown with a
+    /// "draft" label and excluded from the review-requested count.
+    var isDraft: Bool = false
     /// When a review was most recently requested from the signed-in user, if known.
     let reviewRequestedAt: Date?
     /// True when at least one reviewer is currently requested (a fresh or
@@ -142,6 +148,6 @@ struct RepoPRs: Identifiable, Codable {
     var id: String { repo.id }
 
     var reviewRequestedCount: Int {
-        pullRequests.filter { $0.reviewRequestedFromMe }.count
+        pullRequests.filter { $0.reviewRequestedFromMe && !$0.isDraft }.count
     }
 }

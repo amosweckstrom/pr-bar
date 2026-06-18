@@ -6,34 +6,26 @@ import Foundation
 /// interactive `claude` session seeded with it — the user stays in the loop and
 /// drives the pace; Claude explains each change and waits before moving on.
 enum AIReview {
-    /// Hands a PR off to the agent for a guided, one-file-at-a-time review,
-    /// running in the PR's git worktree (created off `repo.localPath` if needed)
-    /// so the agent reads — and can run — the actual checked-out code rather than
-    /// a fetch-only sandbox. Same worktree the `</>` and "address comments"
-    /// actions use.
+    /// Hands a PR off to the agent for a guided, one-file-at-a-time review. When a
+    /// local clone is configured it runs in the PR's git worktree (real
+    /// checked-out code, same worktree the `</>` action uses); otherwise it still
+    /// launches in a scratch dir — the review prompt drives `gh pr view/diff <url>`
+    /// with full URLs, which needs no clone. So "Review with AI" works on any PR.
     /// - Parameters:
     ///   - agentInvocation: command prefix (e.g. `claude`, `gemini -i`); the
     ///     prompt is appended to it as the final quoted argument.
-    /// - Returns: false if no local clone path is configured for the repo (nothing launched).
+    /// - Returns: false only if the prompt file could not be written.
     @discardableResult
     static func start(pr: PullRequest, repo: TrackedRepo,
                       terminalBundleID: String, agentInvocation: String) -> Bool {
-        guard let local = usableLocalPath(for: repo) else { return false }
-
-        let prompt = makePrompt(url: pr.url)
-        let tmp = FileManager.default.temporaryDirectory
-        let promptURL = tmp.appendingPathComponent(
-            "lgtm-review-\(pr.number)-\(UUID().uuidString.prefix(8)).md")
-        do {
-            try prompt.write(to: promptURL, atomically: true, encoding: .utf8)
-        } catch {
-            NSLog("lgtm: failed to write review prompt: \(error.localizedDescription)")
+        guard let promptURL = writePrompt(makePrompt(url: pr.url), kind: "review", number: pr.number) else {
             return false
         }
-
-        // Resolve (or create) the PR's worktree, then seed the agent in it.
-        let shellCmd = ensureWorktreeShell(pr: pr, repo: repo, local: local)
-            + " && \(agentInvocation) \"$(cat '\(promptURL.path)')\""
+        // Worktree (richer) when a clone is set; scratch dir otherwise.
+        let prefix = usableLocalPath(for: repo)
+            .map { worktreeShellRead(pr: pr, repo: repo, local: $0) }
+            ?? scratchShell()
+        let shellCmd = prefix + " && \(agentInvocation) \"$(cat '\(promptURL.path)')\""
         Terminals.launch(bundleID: terminalBundleID, shellCommand: shellCmd)
         return true
     }
@@ -49,20 +41,12 @@ enum AIReview {
     static func startComments(pr: PullRequest, repo: TrackedRepo,
                               terminalBundleID: String, agentInvocation: String) -> Bool {
         guard let local = usableLocalPath(for: repo) else { return false }
-
-        let prompt = commentsPrompt(number: pr.number)
-        let tmp = FileManager.default.temporaryDirectory
-        let promptURL = tmp.appendingPathComponent(
-            "lgtm-comments-\(pr.number)-\(UUID().uuidString.prefix(8)).md")
-        do {
-            try prompt.write(to: promptURL, atomically: true, encoding: .utf8)
-        } catch {
-            NSLog("lgtm: failed to write comments prompt: \(error.localizedDescription)")
+        guard let promptURL = writePrompt(commentsPrompt(number: pr.number),
+                                          kind: "comments", number: pr.number) else {
             return false
         }
-
-        // Resolve (or create) the PR's worktree, then seed the agent in it.
-        let shellCmd = ensureWorktreeShell(pr: pr, repo: repo, local: local)
+        // Branch-mode worktree: the agent commits and the user pushes to update the PR.
+        let shellCmd = worktreeShellWrite(pr: pr, repo: repo, local: local)
             + " && \(agentInvocation) \"$(cat '\(promptURL.path)')\""
         Terminals.launch(bundleID: terminalBundleID, shellCommand: shellCmd)
         return true
@@ -105,7 +89,7 @@ enum AIReview {
 
         // Resolve/create the worktree headlessly; the shell prints the resolved
         // path on a marker line so we can open the window on exactly that dir.
-        let shellCmd = ensureWorktreeShell(pr: pr, repo: repo, local: local)
+        let shellCmd = worktreeShellRead(pr: pr, repo: repo, local: local)
             + " && printf '\\n__LGTM_TARGET__%s\\n' \"$TARGET\""
         runHeadlessResolvingTarget(shellCmd,
                                    failureContext: "open the worktree for PR #\(pr.number)") { target in
@@ -167,17 +151,36 @@ enum AIReview {
         }
     }
 
-    /// Builds a shell snippet that leaves the shell cwd at the PR's worktree
-    /// (creating it off `local` if needed), with `$TARGET` set to its path, and
-    /// runs the per-repo setup hook. Callers append `&& <action>`. Shared by the
-    /// "address comments" and "open in VS Code" actions so they always use the
-    /// SAME worktree. Order matters: if the branch is ALREADY checked out
-    /// somewhere (the main clone or a prior worktree) we reuse that directory,
-    /// because git refuses to check one branch out in two worktrees. Only when it
-    /// is checked out nowhere do we add a dedicated worktree — keeping the main
-    /// checkout's current branch untouched in the common case.
-    private static func ensureWorktreeShell(pr: PullRequest, repo: TrackedRepo,
-                                            local: String) -> String {
+    /// READ path (open editor / guided review): leaves the shell in a DETACHED
+    /// worktree at the PR's head commit, in the PR-number-keyed conventional dir,
+    /// with `$TARGET` set to its path. Detaching — rather than checking the branch
+    /// out by name — means it can never collide with the main clone or another
+    /// fork's same-named branch (the bug where a fork PR whose head branch is
+    /// `main` got reviewed against your own `main` checkout). `pull/<n>/head`
+    /// fetches the head even from forks. If the conventional dir already exists
+    /// (e.g. a prior write session left a branch there) it's reused as-is.
+    /// Callers append `&& <action>`.
+    private static func worktreeShellRead(pr: PullRequest, repo: TrackedRepo,
+                                          local: String) -> String {
+        let n = pr.number
+        let wt = Worktrees.shellPath(for: pr, in: repo)
+        return "cd \"\(local)\" && git fetch origin --quiet && "
+            + "TARGET=\"\(wt)\" && mkdir -p \"\(Worktrees.rootShell)\" && "
+            + "if [ ! -d \"$TARGET\" ]; then "
+            +   "git fetch origin \"pull/\(n)/head\" --quiet && "
+            +   "git worktree add --detach \"$TARGET\" FETCH_HEAD; "
+            + "fi && cd \"$TARGET\" && "
+            + hookSnippet(for: repo)
+    }
+
+    /// WRITE path (address comments): leaves the shell in a worktree with the PR's
+    /// BRANCH checked out, so the agent can commit and the user can push to update
+    /// the PR. If the branch is ALREADY checked out somewhere (the main clone or a
+    /// prior worktree) we reuse that directory — git refuses one branch in two
+    /// worktrees — otherwise we add a dedicated worktree and `gh pr checkout`.
+    /// Callers append `&& <action>`.
+    private static func worktreeShellWrite(pr: PullRequest, repo: TrackedRepo,
+                                           local: String) -> String {
         let n = pr.number
         let wt = Worktrees.shellPath(for: pr, in: repo)
         // awk over `git worktree list --porcelain` to find where $BR is checked out.
@@ -191,11 +194,48 @@ enum AIReview {
             +   "{ [ -d \"$TARGET\" ] || git worktree add --detach \"$TARGET\"; } && "
             +   "cd \"$TARGET\" && gh pr checkout \(n); "
             + "else echo \"[lgtm] '$BR' is already checked out at $TARGET — using it\" && cd \"$TARGET\"; fi && "
-            // Run a machine-local, per-repo setup hook if one exists (e.g. symlink
-            // env files, install deps). Non-fatal: a failing or missing hook must
-            // never block the action.
-            + "{ HOOK=\"$HOME/.lgtm/hooks/\(Worktrees.slug(for: repo)).sh\"; [ -x \"$HOOK\" ] && "
-            +   "echo \"[lgtm] running setup hook $HOOK\" && \"$HOOK\" \"$TARGET\"; true; }"
+            + hookSnippet(for: repo)
+    }
+
+    /// Neutral working dir for the clone-less review fallback: the agent reviews
+    /// via `gh pr view/diff <url>` (full URLs), so cwd only needs to exist and not
+    /// sit inside an unrelated git repo.
+    private static func scratchShell() -> String {
+        "mkdir -p \"$HOME/.lgtm/scratch\" && cd \"$HOME/.lgtm/scratch\""
+    }
+
+    /// Runs a machine-local, per-repo setup hook if one exists (e.g. symlink env
+    /// files, install deps). Non-fatal: a failing or missing hook must never block
+    /// the action. Both worktree paths end with this, with `$TARGET` already set.
+    private static func hookSnippet(for repo: TrackedRepo) -> String {
+        "{ HOOK=\"$HOME/.lgtm/hooks/\(Worktrees.slug(for: repo)).sh\"; [ -x \"$HOOK\" ] && "
+            + "echo \"[lgtm] running setup hook $HOOK\" && \"$HOOK\" \"$TARGET\"; true; }"
+    }
+
+    /// Writes a prompt to a managed file under `~/.lgtm/prompts`, first pruning any
+    /// prompt files older than a day (the terminal `cat`s the file asynchronously,
+    /// so we can't delete it the moment we launch). Returns the file URL, or nil on
+    /// write failure. Replaces the old scheme that leaked files into the temp dir.
+    private static func writePrompt(_ text: String, kind: String, number: Int) -> URL? {
+        let fm = FileManager.default
+        let dir = fm.homeDirectoryForCurrentUser.appendingPathComponent(".lgtm/prompts")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let entries = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) {
+            let cutoff = Date().addingTimeInterval(-86_400)
+            for url in entries where (try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate).flatMap({ $0 < cutoff }) ?? false {
+                try? fm.removeItem(at: url)
+            }
+        }
+        let url = dir.appendingPathComponent("lgtm-\(kind)-\(number)-\(UUID().uuidString.prefix(8)).md")
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            NSLog("lgtm: failed to write \(kind) prompt: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     /// Self-contained prompt for the guided, one-at-a-time comment walkthrough.

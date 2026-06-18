@@ -9,6 +9,7 @@ final class EditorTerminalPane: NSViewController, @preconcurrency LocalProcessTe
     private let workingDirectory: URL
     private var terminal: LocalProcessTerminalView!
     private var started = false
+    private var appearanceObserver: NSKeyValueObservation?
 
     init(workingDirectory: URL) {
         self.workingDirectory = workingDirectory
@@ -20,16 +21,37 @@ final class EditorTerminalPane: NSViewController, @preconcurrency LocalProcessTe
         let tv = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 480, height: 480))
         tv.autoresizingMask = [.width, .height]
         tv.font = Self.terminalFont(size: 12.5)
-
-        // ---- Light theme ----
-        tv.nativeBackgroundColor = .white
-        tv.nativeForegroundColor = NSColor(white: 0.12, alpha: 1)
-        tv.caretColor = NSColor(srgbRed: 0.20, green: 0.40, blue: 0.85, alpha: 1)
         tv.selectedTextBackgroundColor = .selectedTextBackgroundColor
-        tv.installColors(Self.lightPalette)
-
         self.terminal = tv
         self.view = tv
+        applyTheme()   // light or dark palette per the current system appearance
+        // Live-follow system light/dark changes while the window is open.
+        // effectiveAppearance KVO fires on the main thread; hop to satisfy isolation.
+        appearanceObserver = tv.observe(\.effectiveAppearance) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.applyTheme() }
+        }
+    }
+
+    // MARK: Appearance (follow the system light/dark setting)
+
+    private var isDark: Bool {
+        (isViewLoaded ? view.effectiveAppearance : NSApp.effectiveAppearance)
+            .bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
+
+    private func applyTheme() {
+        guard let tv = terminal else { return }
+        if isDark {
+            tv.nativeBackgroundColor = NSColor(srgbRed: 0.051, green: 0.067, blue: 0.090, alpha: 1)  // #0d1117
+            tv.nativeForegroundColor = NSColor(srgbRed: 0.90, green: 0.93, blue: 0.95, alpha: 1)
+            tv.caretColor = NSColor(srgbRed: 0.31, green: 0.55, blue: 0.97, alpha: 1)
+            tv.installColors(Self.darkPalette)
+        } else {
+            tv.nativeBackgroundColor = .white
+            tv.nativeForegroundColor = NSColor(white: 0.12, alpha: 1)
+            tv.caretColor = NSColor(srgbRed: 0.20, green: 0.40, blue: 0.85, alpha: 1)
+            tv.installColors(Self.lightPalette)
+        }
     }
 
     override func viewDidAppear() {
@@ -71,6 +93,19 @@ final class EditorTerminalPane: NSViewController, @preconcurrency LocalProcessTe
             c(38, 139, 210), c(211, 54, 130), c(42, 161, 152), c(101, 123, 131),
             c(88, 110, 117), c(203, 75, 22),  c(0, 43, 54),    c(7, 54, 66),
             c(38, 139, 210), c(108, 113, 196), c(42, 161, 152), c(147, 161, 161),
+        ]
+    }()
+
+    /// GitHub-Dark-style 16-colour ANSI palette for the dark appearance.
+    private static let darkPalette: [SwiftTerm.Color] = {
+        func c(_ r: Int, _ g: Int, _ b: Int) -> SwiftTerm.Color {
+            SwiftTerm.Color(red: UInt16(r * 257), green: UInt16(g * 257), blue: UInt16(b * 257))
+        }
+        return [
+            c(72, 79, 88),    c(255, 123, 114), c(63, 185, 80),  c(210, 153, 34),
+            c(88, 166, 255),  c(188, 140, 255), c(57, 197, 207), c(177, 186, 196),
+            c(110, 118, 129), c(255, 161, 152), c(86, 211, 100), c(227, 179, 65),
+            c(121, 192, 255), c(210, 168, 255), c(86, 212, 221), c(240, 246, 252),
         ]
     }()
 

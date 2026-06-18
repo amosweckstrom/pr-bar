@@ -11,7 +11,7 @@ struct LGTMApp: App {
                 .onAppear { state.start() }
         } label: {
             // Icon + attention count badge. Filled glyph when something wants you.
-            let count = state.attentionTotal
+            let count = state.menuBarBadgeCount
             if count > 0 {
                 Label("\(count)", systemImage: "checklist.checked")
             } else {

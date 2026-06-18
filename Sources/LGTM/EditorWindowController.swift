@@ -52,6 +52,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
 
     private var base: String?
     private var statusMap: [String: WorktreeData.Status] = [:]
+    private var renames: [String: String] = [:]      // new path -> old path
+    private var knownPaths: Set<String> = []          // paths the tree actually offered
 
     init(worktree: URL, repo: TrackedRepo, pr: PullRequest) {
         self.worktree = worktree
@@ -89,7 +91,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
             backing: .buffered, defer: false)
         window.contentViewController = split
         window.title = "\(repo.slug) #\(pr.number)"
-        window.appearance = NSAppearance(named: .aqua)   // light chrome
+        // No forced appearance: the window, its web panes, and the terminal all
+        // follow the system light/dark setting (see EditorWebPane/TerminalPane).
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("LGTMEditorWindow-\(repo.slug)-\(pr.number)")
         window.center()
@@ -126,6 +129,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
     private func feedTree(_ snap: WorktreeData.Snapshot) {
         base = snap.base
         statusMap = snap.status
+        renames = snap.renames
+        knownPaths = Set(snap.paths)
         let entries = snap.status.map { GitStatusEntry(path: $0.key, status: $0.value.rawValue) }
         guard let pathsJSON = jsonString(snap.paths),
               let statusJSON = jsonString(entries) else { return }
@@ -133,11 +138,15 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func loadDiff(path: String) {
+        // Only diff paths the snapshot actually offered — never a path the web
+        // pane might post that escapes the worktree (defense-in-depth).
+        guard knownPaths.contains(path) else { return }
         let status = statusMap[path] ?? .modified
+        let oldPath = renames[path]
         let base = self.base
         let root = worktree.path
         DispatchQueue.global(qos: .userInitiated).async {
-            let fd = WorktreeData.fileDiff(root: root, base: base, path: path, status: status)
+            let fd = WorktreeData.fileDiff(root: root, base: base, path: path, status: status, oldPath: oldPath)
             guard let json = jsonString(fd) else { return }
             DispatchQueue.main.async {
                 self.diffPane.callJS("window.LGTM.renderDiff(\(json));")

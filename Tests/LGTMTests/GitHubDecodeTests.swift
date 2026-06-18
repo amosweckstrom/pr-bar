@@ -21,14 +21,17 @@ final class GitHubDecodeTests: XCTestCase {
         reviewDecision: String? = nil,
         rollupState: String? = nil,
         includeRollup: Bool = true,
+        isDraft: Bool = false,
         requestedLogins: [String] = [],
+        requestedReviewers: [[String: Any]]? = nil,
         timeline: [(login: String, createdAt: String)] = []
     ) -> [String: Any] {
         var n: [String: Any] = [
             "id": id,
             "number": number,
             "title": title,
-            "url": url
+            "url": url,
+            "isDraft": isDraft
         ]
         if let author { n["author"] = author }
         if let reviewDecision { n["reviewDecision"] = reviewDecision }
@@ -45,8 +48,11 @@ final class GitHubDecodeTests: XCTestCase {
         let commitNode: [String: Any] = ["commit": ["statusCheckRollup": rollup as Any]]
         n["commits"] = ["nodes": [commitNode]]
 
-        // reviewRequests.nodes[].requestedReviewer.login
-        let requestNodes: [[String: Any]] = requestedLogins.map {
+        // reviewRequests.nodes[].requestedReviewer — explicit reviewers (to inject
+        // teams/bots) take precedence; otherwise build User reviewers from logins.
+        let requestNodes: [[String: Any]] = requestedReviewers.map { reviewers in
+            reviewers.map { ["requestedReviewer": $0] }
+        } ?? requestedLogins.map {
             ["requestedReviewer": ["__typename": "User", "login": $0]]
         }
         n["reviewRequests"] = ["nodes": requestNodes]
@@ -67,6 +73,24 @@ final class GitHubDecodeTests: XCTestCase {
     /// Wrap PR nodes in the top-level GraphQL envelope.
     private func envelope(_ nodes: [[String: Any]]) -> [String: Any] {
         ["data": ["repository": ["pullRequests": ["nodes": nodes]]]]
+    }
+
+    /// A `review-requested:@me` search PR node: a normal node plus the
+    /// `__typename`/`repository` the search decode needs to route it back.
+    private func searchNode(id: String, number: Int, owner: String, name: String,
+                            isDraft: Bool = false) -> [String: Any] {
+        var n = node(id: id, number: number, isDraft: isDraft)
+        n["__typename"] = "PullRequest"
+        n["repository"] = ["name": name, "owner": ["login": owner]]
+        return n
+    }
+
+    /// Wrap search PR nodes in the top-level `data.search` envelope.
+    private func searchEnvelope(_ nodes: [[String: Any]], hasNextPage: Bool = false,
+                                endCursor: String? = nil) -> [String: Any] {
+        var pageInfo: [String: Any] = ["hasNextPage": hasNextPage]
+        if let endCursor { pageInfo["endCursor"] = endCursor }
+        return ["data": ["search": ["pageInfo": pageInfo, "nodes": nodes]]]
     }
 
     // MARK: - statusCheckRollup mapping
@@ -134,6 +158,114 @@ final class GitHubDecodeTests: XCTestCase {
         let withoutRequests = try GitHubClient.decodePullRequests(
             from: envelope([node(requestedLogins: [])]), viewerLogin: "me")
         XCTAssertFalse(withoutRequests.first?.hasPendingReviewRequest ?? true)
+    }
+
+    // A pending *bot* reviewer (e.g. Copilot) must not read as "awaiting review",
+    // or it would mask a real CHANGES_REQUESTED on every PR it sits on.
+    func testBotOnlyPendingRequestIsNotPending() throws {
+        let json = envelope([node(requestedReviewers: [["__typename": "Bot", "login": "copilot"]])])
+        let prs = try GitHubClient.decodePullRequests(from: json, viewerLogin: "me")
+        XCTAssertFalse(prs.first?.hasPendingReviewRequest ?? true)
+        XCTAssertFalse(prs.first?.reviewRequestedFromMe ?? true)
+    }
+
+    // A pending team reviewer counts as a real pending request; membership (is the
+    // team mine?) is resolved by the team-aware search, not this decode.
+    func testTeamPendingRequestCountsAsPending() throws {
+        let json = envelope([node(requestedReviewers: [["__typename": "Team", "slug": "platform"]])])
+        let prs = try GitHubClient.decodePullRequests(from: json, viewerLogin: "me")
+        XCTAssertTrue(prs.first?.hasPendingReviewRequest ?? false)
+        XCTAssertFalse(prs.first?.reviewRequestedFromMe ?? true)
+    }
+
+    // MARK: - isDraft
+
+    func testIsDraftDecoded() throws {
+        let draft = try GitHubClient.decodePullRequests(from: envelope([node(isDraft: true)]), viewerLogin: "me")
+        XCTAssertTrue(draft.first?.isDraft ?? false)
+        let ready = try GitHubClient.decodePullRequests(from: envelope([node(isDraft: false)]), viewerLogin: "me")
+        XCTAssertFalse(ready.first?.isDraft ?? true)
+    }
+
+    // Drafts don't count toward the review-requested badge even if flagged.
+    func testDraftExcludedFromReviewRequestedCount() throws {
+        let prs = try GitHubClient.decodePullRequests(
+            from: envelope([
+                node(id: "d", number: 1, isDraft: true, requestedLogins: ["me"]),
+                node(id: "r", number: 2, isDraft: false, requestedLogins: ["me"]),
+            ]), viewerLogin: "me")
+        let repo = RepoPRs(repo: TrackedRepo(owner: "o", name: "r"), pullRequests: prs, error: nil)
+        XCTAssertEqual(repo.reviewRequestedCount, 1)
+    }
+
+    // MARK: - review-requested:@me search decode
+
+    func testDecodeReviewRequestedTagsReposAndFlags() throws {
+        let json = searchEnvelope([
+            searchNode(id: "P1", number: 11, owner: "Acme", name: "Web"),
+            searchNode(id: "P2", number: 12, owner: "acme", name: "api"),
+        ])
+        let (prs, next) = try GitHubClient.decodeReviewRequested(from: json, viewerLogin: "me")
+        XCTAssertNil(next)
+        XCTAssertEqual(prs.map(\.pr.id), ["P1", "P2"])
+        XCTAssertEqual(prs.map(\.owner), ["Acme", "acme"])
+        XCTAssertTrue(prs.allSatisfy { $0.pr.reviewRequestedFromMe })
+        XCTAssertTrue(prs.allSatisfy { $0.pr.hasPendingReviewRequest })
+    }
+
+    func testDecodeReviewRequestedReturnsCursorOnlyWhenMorePages() throws {
+        let more = try GitHubClient.decodeReviewRequested(
+            from: searchEnvelope([], hasNextPage: true, endCursor: "CUR"), viewerLogin: "me")
+        XCTAssertEqual(more.nextCursor, "CUR")
+        let done = try GitHubClient.decodeReviewRequested(
+            from: searchEnvelope([], hasNextPage: false, endCursor: "CUR"), viewerLogin: "me")
+        XCTAssertNil(done.nextCursor)
+    }
+
+    func testDecodeReviewRequestedMissingSearchThrows() {
+        XCTAssertThrowsError(try GitHubClient.decodeReviewRequested(from: ["data": [:]], viewerLogin: "me"))
+    }
+
+    // MARK: - merge(_:reviewRequested:)
+
+    func testMergeFlipsFlagOnExistingPR() throws {
+        let list = try GitHubClient.decodePullRequests(
+            from: envelope([node(id: "X", number: 1, requestedLogins: [])]), viewerLogin: "me")
+        XCTAssertFalse(list.first?.reviewRequestedFromMe ?? true)   // not flagged by the list query
+        let results = [RepoPRs(repo: TrackedRepo(owner: "o", name: "r"), pullRequests: list, error: nil)]
+
+        let req = try GitHubClient.decodeReviewRequested(
+            from: searchEnvelope([searchNode(id: "X", number: 1, owner: "o", name: "r")]),
+            viewerLogin: "me").prs
+        let merged = GitHubClient.merge(results, reviewRequested: req)
+        XCTAssertEqual(merged.first?.pullRequests.count, 1)
+        XCTAssertTrue(merged.first?.pullRequests.first?.reviewRequestedFromMe ?? false)
+    }
+
+    func testMergeAppendsMissingReviewRequestedPRAndPinsIt() throws {
+        // The list missed PR "B" (beyond the 50-cap, or requested only via a team).
+        let list = try GitHubClient.decodePullRequests(
+            from: envelope([node(id: "A", number: 1, requestedLogins: [])]), viewerLogin: "me")
+        let results = [RepoPRs(repo: TrackedRepo(owner: "o", name: "r"), pullRequests: list, error: nil)]
+
+        let req = try GitHubClient.decodeReviewRequested(
+            from: searchEnvelope([searchNode(id: "B", number: 2, owner: "o", name: "r")]),
+            viewerLogin: "me").prs
+        let prs = try XCTUnwrap(GitHubClient.merge(results, reviewRequested: req).first?.pullRequests)
+        XCTAssertEqual(prs.count, 2)
+        XCTAssertEqual(prs.first?.id, "B", "an appended review-requested PR pins to the top")
+        XCTAssertTrue(prs.first?.reviewRequestedFromMe ?? false)
+    }
+
+    func testMergeLeavesUnmatchedReposUntouched() throws {
+        let list = try GitHubClient.decodePullRequests(
+            from: envelope([node(id: "A", number: 1)]), viewerLogin: "me")
+        let results = [RepoPRs(repo: TrackedRepo(owner: "o", name: "other"), pullRequests: list, error: nil)]
+        let req = try GitHubClient.decodeReviewRequested(
+            from: searchEnvelope([searchNode(id: "Z", number: 9, owner: "o", name: "r")]),
+            viewerLogin: "me").prs
+        let merged = GitHubClient.merge(results, reviewRequested: req)
+        XCTAssertEqual(merged.first?.pullRequests.map(\.id), ["A"])
     }
 
     // MARK: - authoredByMe (case-insensitive)

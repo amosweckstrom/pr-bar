@@ -40,6 +40,7 @@ final class AppState: ObservableObject {
     private let refreshInterval: TimeInterval = 180 // 3 minutes
     private var timer: Timer?
     private var viewerLogin: String?
+    private var lastWorktreeCleanup: Date?
 
     init() {
         self.hasToken = Keychain.loadToken() != nil
@@ -78,6 +79,11 @@ final class AppState: ObservableObject {
     /// Everything that wants the user's attention: reviews owed + responses received.
     var attentionTotal: Int { Attention.attentionTotal(in: results) }
 
+    /// What the menu-bar badge shows: actionable-now work (reviews owed + your PRs
+    /// with changes requested). Excludes approved-but-unmerged PRs so the icon
+    /// doesn't stay lit forever for PRs you're intentionally holding open.
+    var menuBarBadgeCount: Int { Attention.menuBarBadgeCount(in: results) }
+
     func start() {
         Task { await refresh() }
         timer?.invalidate()
@@ -107,10 +113,24 @@ final class AppState: ObservableObject {
         let o = owner.trimmingCharacters(in: .whitespaces)
         let n = name.trimmingCharacters(in: .whitespaces)
         guard !o.isEmpty, !n.isEmpty else { return }
+        guard Self.isValidRepoComponent(o), Self.isValidRepoComponent(n) else {
+            lastError = "Invalid repository “\(o)/\(n)”. Use a plain owner/name, e.g. octocat/Hello-World."
+            return
+        }
         let repo = TrackedRepo(owner: o, name: n)
         guard !repos.contains(repo) else { return }
+        lastError = nil
         repos.append(repo)
         Task { await refresh() }
+    }
+
+    /// GitHub owner/repo names are ASCII letters, digits, `.`, `_`, `-` only.
+    /// Validate before any value can flow into a shell command (worktree paths,
+    /// `gh` invocations), so a stray metacharacter can never be interpolated.
+    static func isValidRepoComponent(_ s: String) -> Bool {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        return !s.isEmpty && s.count <= 100 && s != "." && s != ".."
+            && s.allSatisfy(allowed.contains)
     }
 
     func removeRepo(_ repo: TrackedRepo) {
@@ -204,12 +224,35 @@ final class AppState: ObservableObject {
         }
 
         // Restore the tracked-repo order (task completion order is nondeterministic).
-        let ordered = fetched.sorted { $0.0 < $1.0 }.map { $0.1 }
+        var ordered = fetched.sorted { $0.0 < $1.0 }.map { $0.1 }
+
+        // Fold in the team-aware `review-requested:@me` search so the badge counts
+        // requests routed via a team (CODEOWNERS) and any review-requested PR
+        // beyond a busy repo's 50 most-recently-updated. Best-effort: if the
+        // search fails we keep the per-repo User-login detection rather than
+        // dropping everything.
+        do {
+            let requested = try await client.reviewRequested(in: repoList, viewerLogin: login)
+            ordered = GitHubClient.merge(ordered, reviewRequested: requested)
+        } catch {
+            NSLog("lgtm: review-requested search failed: \(error.localizedDescription)")
+        }
+
         results = ordered
         lastError = ordered.compactMap(\.error).first
         lastUpdated = Date()
 
-        // Reap worktrees whose PR has since merged/closed (background, safe).
+        // Reap worktrees whose PR has since merged/closed (throttled, background).
+        maybeCleanupWorktrees()
+    }
+
+    /// Reap merged/closed PR worktrees, but at most every 30 minutes: cleanup
+    /// shells out to `gh` once per worktree, so running it on every 3-minute
+    /// refresh is wasteful.
+    private func maybeCleanupWorktrees() {
+        let now = Date()
+        if let last = lastWorktreeCleanup, now.timeIntervalSince(last) < 1800 { return }
+        lastWorktreeCleanup = now
         Worktrees.cleanupClosed()
     }
 

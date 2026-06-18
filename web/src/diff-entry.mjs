@@ -11,8 +11,13 @@ function log(msg) {
 window.addEventListener('error', (e) => log('ERR ' + (e.message || '') + ' @ ' + (e.filename || '') + ':' + (e.lineno || 0)));
 window.addEventListener('unhandledrejection', (e) => log('REJ ' + (e.reason && (e.reason.message || e.reason))));
 
-const THEME = 'github-light';
+// Theme is switchable at runtime: native calls window.LGTM.setTheme('dark'|'light')
+// to follow the system appearance, and we re-render the current file in the new
+// Shiki theme. Both themes are bundled, so the switch stays fully offline.
+let THEME = 'github-light';
+let themeType = 'light';
 let current = null;
+let lastArgs = null;   // last renderDiff input, so a theme switch can re-render it
 
 function host() {
   return document.getElementById('diff');
@@ -32,6 +37,7 @@ function placeholder(message) {
 /// file path); `oldText`/`newText` are the before/after contents (either may be
 /// null for added/deleted); `binary` short-circuits.
 async function renderDiff({ path, oldText, newText, binary }) {
+  lastArgs = { path, oldText, newText, binary };
   const name = path;
   const el = host();
   if (!el) return false;
@@ -59,7 +65,7 @@ async function renderDiff({ path, oldText, newText, binary }) {
   try {
     current = new FileDiff({
       theme: THEME,
-      themeType: 'light',        // force the light branch of CSS light-dark()
+      themeType,                 // 'light' | 'dark' branch of CSS light-dark()
       diffStyle: 'split',
       preferredHighlighter: 'shiki-js',
     });
@@ -76,8 +82,19 @@ async function renderDiff({ path, oldText, newText, binary }) {
   return true;
 }
 
+/// Switch the diff theme to match the native window appearance and re-render the
+/// current file (if any) so the change is immediate.
+function setTheme(mode) {
+  const dark = mode === 'dark';
+  THEME = dark ? 'github-dark' : 'github-light';
+  themeType = dark ? 'dark' : 'light';
+  document.documentElement.classList.toggle('theme-dark', dark);
+  if (lastArgs) renderDiff(lastArgs);
+}
+
 window.LGTM = Object.assign(window.LGTM || {}, {
   renderDiff,
+  setTheme,
   showPlaceholder: placeholder,
   ready: true,
 });

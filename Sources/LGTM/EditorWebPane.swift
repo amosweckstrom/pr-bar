@@ -98,6 +98,7 @@ final class EditorWebPane: NSViewController, WKNavigationDelegate, WKScriptMessa
 
     private var ready = false
     private var pending: [String] = []   // JS snippets queued until ready
+    private var appearanceObserver: NSKeyValueObservation?
 
     /// - Parameters:
     ///   - page: the entry file under WebAssets, e.g. "tree.html".
@@ -121,10 +122,9 @@ final class EditorWebPane: NSViewController, WKNavigationDelegate, WKScriptMessa
 
         let wv = WKWebView(frame: .zero, configuration: config)
         wv.navigationDelegate = self
-        wv.appearance = NSAppearance(named: .aqua)   // keep web UI light in Dark Mode
-        wv.underPageBackgroundColor = .white          // light backdrop, no dark flash
         wv.translatesAutoresizingMaskIntoConstraints = false
         self.webView = wv
+        applyBackdrop()   // page backdrop matches the current appearance (no flash)
 
         let container = NSView()
         container.addSubview(wv)
@@ -143,6 +143,32 @@ final class EditorWebPane: NSViewController, WKNavigationDelegate, WKScriptMessa
               let entry = URL(string: "\(EditorSchemeHandler.scheme)://\(EditorSchemeHandler.host)/\(page)")
         else { return }
         webView.load(URLRequest(url: entry))
+        applyTheme()   // queued until the page signals paneReady
+        // Live-follow system light/dark changes while the window is open.
+        // effectiveAppearance KVO fires on the main thread; hop to satisfy isolation.
+        appearanceObserver = view.observe(\.effectiveAppearance) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.applyTheme() }
+        }
+    }
+
+    // MARK: Appearance (follow the system light/dark setting)
+
+    private var isDark: Bool {
+        (isViewLoaded ? view.effectiveAppearance : NSApp.effectiveAppearance)
+            .bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
+
+    /// Solid backdrop behind the page so resizing/loading never flashes the wrong color.
+    private func applyBackdrop() {
+        webView?.underPageBackgroundColor = isDark
+            ? NSColor(srgbRed: 0.051, green: 0.067, blue: 0.090, alpha: 1)   // #0d1117
+            : .white
+    }
+
+    /// Tell the page which theme to use; `callJS` queues it until the page is ready.
+    private func applyTheme() {
+        applyBackdrop()
+        callJS("window.LGTM && window.LGTM.setTheme && window.LGTM.setTheme('\(isDark ? "dark" : "light")');")
     }
 
     /// Evaluate JS in the page, queueing until the page signals readiness.

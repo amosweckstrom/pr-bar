@@ -47,4 +47,14 @@ enum Attention {
     static func attentionTotal(in results: [RepoPRs]) -> Int {
         reviewRequestedTotal(in: results) + respondedPRs(in: results).count
     }
+
+    /// What the menu-bar badge counts: work that needs an action from you *now* —
+    /// reviews you owe plus your PRs with changes requested. Deliberately EXCLUDES
+    /// approved-but-unmerged PRs: those stay visible in the dropdown's "responded"
+    /// pill and "Your pull requests" section, but shouldn't keep the menu-bar icon
+    /// lit indefinitely for PRs you're intentionally holding open.
+    static func menuBarBadgeCount(in results: [RepoPRs]) -> Int {
+        reviewRequestedTotal(in: results)
+            + respondedPRs(in: results).filter { $0.pr.displayReviewState == .changesRequested }.count
+    }
 }

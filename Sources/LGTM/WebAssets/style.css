@@ -1,5 +1,6 @@
-/* Light, minimal aesthetic for the editor window's web panes — GitHub Primer
-   light palette, matching the rest of LGTM. */
+/* GitHub Primer palette for the editor window's web panes, matching the rest of
+   LGTM. Defaults to light; native toggles `.theme-dark` on <html> to follow the
+   system appearance (see {tree,diff}-entry.mjs setTheme). */
 :root {
   --bg: #ffffff;
   --fg: #1f2328;
@@ -7,7 +8,16 @@
   --border: #d0d7de;
   --canvas-subtle: #f6f8fa;
   --accent: #0969da;
-  color-scheme: light;
+  color-scheme: light dark;
+}
+
+.theme-dark {
+  --bg: #0d1117;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --border: #30363d;
+  --canvas-subtle: #161b22;
+  --accent: #2f81f7;
 }
 
 * { box-sizing: border-box; }
@@ -43,6 +53,22 @@ body {
   --trees-status-renamed-override: #8250df;
   --trees-status-untracked-override: #1a7f37;
   --trees-status-ignored-override: #8c959f;
+}
+
+.theme-dark .tree-host {
+  --trees-bg-override: #0d1117;
+  --trees-fg-override: #e6edf3;
+  --trees-accent-override: #2f81f7;
+  --trees-border-color-override: #30363d;
+  --trees-selected-bg-override: #163961;
+  --trees-selected-fg-override: #cae3ff;
+  --trees-focus-ring-color-override: #2f81f7;
+  --trees-status-added-override: #3fb950;
+  --trees-status-modified-override: #d29922;
+  --trees-status-deleted-override: #f85149;
+  --trees-status-renamed-override: #a371f7;
+  --trees-status-untracked-override: #3fb950;
+  --trees-status-ignored-override: #6e7681;
 }
 
 /* ---- Diff pane (@pierre/diffs mounts a <diffs-container> here) ---- */

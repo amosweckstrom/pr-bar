@@ -321,6 +321,9 @@ private struct RepoPRRow: View {
                     Text("@\(pr.author)")
                         .font(.system(size: 12))
                         .foregroundStyle(p.muted)
+                    if pr.isDraft {
+                        LabelPill(text: "draft", color: p.muted)
+                    }
                     if pr.reviewRequestedFromMe {
                         LabelPill(text: "review requested", color: p.accent)
                         if let at = pr.reviewRequestedAt {
@@ -404,6 +407,9 @@ private struct MyPRRow: View {
                         .foregroundStyle(p.muted)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    if pr.isDraft {
+                        LabelPill(text: "draft", color: p.muted)
+                    }
                     LabelPill(text: display.label, color: display.color(p),
                               leadingSymbol: display.leadingSymbol)
                 }
