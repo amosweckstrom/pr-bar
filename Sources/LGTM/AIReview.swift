@@ -164,7 +164,14 @@ enum AIReview {
                                           local: String) -> String {
         let n = pr.number
         let wt = Worktrees.shellPath(for: pr, in: repo)
-        return "cd \"\(local)\" && git fetch origin --quiet && "
+        // Only the targeted pull/<n>/head fetch runs, and only when creating the
+        // worktree — NOT a full `git fetch origin` first. The detached worktree is
+        // built from that fetch's FETCH_HEAD, so an all-refs fetch buys nothing
+        // here but a second ~1.5s network round-trip before the window can open.
+        // The diff base (merge-base HEAD origin/<base> in WorktreeData) is stable
+        // under a slightly-stale origin/<base> — the PR's fork point is an old
+        // commit already present locally — so skipping it doesn't shift the base.
+        return "cd \"\(local)\" && "
             + "TARGET=\"\(wt)\" && mkdir -p \"\(Worktrees.rootShell)\" && "
             + "if [ ! -d \"$TARGET\" ]; then "
             +   "git fetch origin \"pull/\(n)/head\" --quiet && "

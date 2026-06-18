@@ -51,19 +51,25 @@ enum WorktreeData {
         let base = resolveBase(root: root, prNumber: prNumber)
         var (status, renames) = statusMap(root: root, base: base)
 
-        // Tree = tracked ∪ untracked(non-ignored) ∪ deleted (so deletions show).
+        // Tree = every tracked file ∪ untracked(non-ignored) ∪ deleted, so the
+        // whole repo stays browsable; files the PR didn't touch carry no status,
+        // which the tree renders as a plain (unbadged) entry.
         var paths = Set<String>()
         for line in lines(of: git(["ls-files"], root)) { paths.insert(line) }
-        for line in lines(of: git(["ls-files", "--others", "--exclude-standard"], root)) { paths.insert(line) }
+        // `--others --exclude-standard` lists exactly the untracked, non-ignored
+        // files, so they can be classified `.untracked` directly. The old code
+        // instead probed every still-unclassified path with `git ls-files
+        // --error-unmatch` — one subprocess PER repo file — which cost ~4s on a
+        // 500-file repo for zero new information (an `ls-files` path is tracked by
+        // definition, so the probe could only ever say "tracked").
+        for line in lines(of: git(["ls-files", "--others", "--exclude-standard"], root)) where !line.isEmpty {
+            paths.insert(line)
+            if status[line] == nil { status[line] = .untracked }
+        }
         for (p, s) in status where s == .deleted { paths.insert(p) }
 
-        // Drop any path no longer relevant if it slipped in empty.
+        // Drop any path that slipped in empty.
         paths = paths.filter { !$0.isEmpty }
-
-        // Untracked files that weren't already classified are `untracked`.
-        for p in paths where status[p] == nil {
-            if isUntracked(root: root, path: p) { status[p] = .untracked }
-        }
 
         return Snapshot(root: root, base: base, paths: paths.sorted(), status: status, renames: renames)
     }
@@ -165,11 +171,6 @@ enum WorktreeData {
         if code.contains("R") { return .renamed }
         if code.contains("M") { return .modified }
         return nil
-    }
-
-    private static func isUntracked(root: String, path: String) -> Bool {
-        // ls-files --error-unmatch exits non-zero for untracked paths.
-        run(gitPath, ["-C", root, "ls-files", "--error-unmatch", path], capturingErr: false).status != 0
     }
 
     // MARK: - Binary detection
