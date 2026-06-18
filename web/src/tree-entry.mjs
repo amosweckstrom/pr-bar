@@ -20,11 +20,29 @@ function renderTree(paths, gitStatus, selected) {
   }
   el.replaceChildren();
 
+  // Collapse the full repo tree by default, but auto-expand the directories that
+  // contain a changed file — so the PR's changes are visible on open while the
+  // rest of the repo stays tucked away (expand any folder to browse it). Passing
+  // explicit `initialExpandedPaths` with 'closed' expands only those dirs;
+  // 'open' with none would expand everything (the old wall-of-files). The tree
+  // keys directories by their path with no trailing slash, so build each
+  // changed file's ancestor dirs the same way.
+  const expanded = new Set();
+  for (const entry of gitStatus || []) {
+    const parts = entry.path.split('/');
+    let acc = '';
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      acc = acc ? `${acc}/${parts[i]}` : parts[i];
+      expanded.add(acc);
+    }
+  }
+
   tree = new FileTree({
     paths,
     gitStatus: gitStatus || [],
     flattenEmptyDirectories: false,
-    initialExpansion: 'open',
+    initialExpansion: 'closed',
+    initialExpandedPaths: [...expanded],
     search: true,
     icons: { set: 'standard', colored: true },
     // Selection (click / keyboard). We forward only FILE selections to native.

@@ -3,7 +3,7 @@
 // esbuild (without code-splitting) inlines @pierre/diffs AND all of Shiki's
 // bundled grammars/themes — and the JS regex engine ('shiki-js') needs no WASM —
 // so the rendered diff is fully self-contained and offline.
-import { FileDiff, preloadHighlighter, getFiletypeFromFileName } from '@pierre/diffs';
+import { FileDiff, File, preloadHighlighter, getFiletypeFromFileName } from '@pierre/diffs';
 
 function log(msg) {
   try { window.webkit?.messageHandlers?.lgtmLog?.postMessage('[diff] ' + msg); } catch (_) {}
@@ -60,6 +60,29 @@ async function renderDiff({ path, oldText, newText, binary }) {
     await preloadHighlighter({ themes: [THEME], langs: [lang], preferredHighlighter: 'shiki-js' });
   } catch (e) {
     log('preload failed: ' + (e && (e.message || e)));
+  }
+
+  // No diff to show — the file is unchanged by the PR, so the before/after sides
+  // are identical. @pierre/diffs renders zero hunks for identical sides, which
+  // looks blank; instead render the file itself (syntax-highlighted, no +/-
+  // gutters) so the whole tree stays browsable, not just the changed files.
+  if ((oldText ?? '') === (newText ?? '')) {
+    try {
+      current = new File({
+        theme: THEME,
+        themeType,               // 'light' | 'dark' branch of CSS light-dark()
+        preferredHighlighter: 'shiki-js',
+      });
+      current.render({
+        file: { name, contents: newText ?? oldText ?? '' },
+        containerWrapper: el,
+      });
+    } catch (e) {
+      log('file render threw: ' + (e && (e.message || e)));
+      placeholder(`${name} — failed to render file`);
+      return false;
+    }
+    return true;
   }
 
   try {
