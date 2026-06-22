@@ -433,7 +433,8 @@ private struct OpenWorktreeButton: View {
 
     var body: some View {
         Button {
-            if !AIReview.openInAppEditor(pr: pr, repo: repo) {
+            let invocation = Agents.resolvedInvocation(for: state.agentID, customCommand: state.customAgentCommand)
+            if !AIReview.openInAppEditor(pr: pr, repo: repo, agentInvocation: invocation) {
                 promptForRepoPath(repo.slug)
             }
         } label: {

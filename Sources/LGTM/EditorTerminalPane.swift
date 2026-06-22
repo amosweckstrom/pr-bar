@@ -7,24 +7,52 @@ import SwiftTerm
 final class EditorTerminalPane: NSViewController, @preconcurrency LocalProcessTerminalViewDelegate {
 
     private let workingDirectory: URL
+    /// Coding-agent command to launch on open (e.g. `claude`, `gemini -i`), or
+    /// nil for a plain login shell.
+    private let agentInvocation: String?
     private var terminal: LocalProcessTerminalView!
     private var started = false
     private var appearanceObserver: NSKeyValueObservation?
+    /// Local monitor that forwards wheel scrolling to a mouse-tracking TUI (see
+    /// installScrollForwarding). `Any?` because that's NSEvent's monitor token type.
+    private var scrollMonitor: Any?
 
-    init(workingDirectory: URL) {
+    init(workingDirectory: URL, agentInvocation: String?) {
         self.workingDirectory = workingDirectory
+        self.agentInvocation = agentInvocation
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
 
+    /// Padding between the pane edges and the terminal grid, so the agent's
+    /// output isn't jammed against the window chrome.
+    private static let padding: CGFloat = 10
+
     override func loadView() {
         let tv = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 480, height: 480))
-        tv.autoresizingMask = [.width, .height]
         tv.font = Self.terminalFont(size: 12.5)
         tv.selectedTextBackgroundColor = .selectedTextBackgroundColor
+        tv.translatesAutoresizingMaskIntoConstraints = false
         self.terminal = tv
-        self.view = tv
-        applyTheme()   // light or dark palette per the current system appearance
+
+        // SwiftTerm draws edge-to-edge within its own bounds (no inset property),
+        // so inset the terminal inside a container view. applyTheme paints the
+        // container the same colour as the terminal background, so the inset reads
+        // as terminal padding rather than a gap showing the window behind.
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 480))
+        container.wantsLayer = true
+        container.autoresizingMask = [.width, .height]
+        container.addSubview(tv)
+        let pad = Self.padding
+        NSLayoutConstraint.activate([
+            tv.topAnchor.constraint(equalTo: container.topAnchor, constant: pad),
+            tv.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -pad),
+            tv.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: pad),
+            tv.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -pad),
+        ])
+        self.view = container
+
+        applyTheme()   // light or dark palette + matching padding background
         // Live-follow system light/dark changes while the window is open.
         // effectiveAppearance KVO fires on the main thread; hop to satisfy isolation.
         appearanceObserver = tv.observe(\.effectiveAppearance) { [weak self] _, _ in
@@ -41,23 +69,37 @@ final class EditorTerminalPane: NSViewController, @preconcurrency LocalProcessTe
 
     private func applyTheme() {
         guard let tv = terminal else { return }
+        let bg: NSColor
         if isDark {
-            tv.nativeBackgroundColor = NSColor(srgbRed: 0.051, green: 0.067, blue: 0.090, alpha: 1)  // #0d1117
+            bg = NSColor(srgbRed: 0.051, green: 0.067, blue: 0.090, alpha: 1)  // #0d1117
+            tv.nativeBackgroundColor = bg
             tv.nativeForegroundColor = NSColor(srgbRed: 0.90, green: 0.93, blue: 0.95, alpha: 1)
             tv.caretColor = NSColor(srgbRed: 0.31, green: 0.55, blue: 0.97, alpha: 1)
             tv.installColors(Self.darkPalette)
         } else {
-            tv.nativeBackgroundColor = .white
+            bg = .white
+            tv.nativeBackgroundColor = bg
             tv.nativeForegroundColor = NSColor(white: 0.12, alpha: 1)
             tv.caretColor = NSColor(srgbRed: 0.20, green: 0.40, blue: 0.85, alpha: 1)
             tv.installColors(Self.lightPalette)
         }
+        // Keep the padding container's background in lock-step with the terminal.
+        view.layer?.backgroundColor = bg.cgColor
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        startShellIfNeeded()
-        view.window?.makeFirstResponder(terminal)
+        // Defer one runloop hop so the split view's initial layout (applied by
+        // EditorWindowController.start right after the window is shown) has sized
+        // the terminal before the PTY starts. Starting at the final width avoids
+        // the shell prompt reflowing across the burst of startup resize events —
+        // the stacked, half-drawn prompts you'd otherwise see on open.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.startShellIfNeeded()
+            self.installScrollForwarding()
+            self.view.window?.makeFirstResponder(self.terminal)
+        }
     }
 
     private func startShellIfNeeded() {
@@ -71,13 +113,28 @@ final class EditorTerminalPane: NSViewController, @preconcurrency LocalProcessTe
         env.append("LGTM_EDITOR_TERMINAL=1")
 
         // currentDirectory is applied via chdir() in the forked child before exec.
-        // A login shell (execName "-zsh") loads the user's profile so PATH (git/gh,
-        // often Homebrew) resolves under the minimal GUI launch environment.
+        let args: [String]
+        let execName: String
+        if let agent = agentInvocation, !agent.isEmpty {
+            // Open straight into the coding agent: a login + interactive shell
+            // (so PATH, aliases and functions all resolve) runs the agent, then
+            // `exec`s a fresh interactive login shell when the agent exits — so
+            // closing the agent leaves a usable shell, not a dead pane.
+            args = ["-l", "-i", "-c", "\(agent); exec \"\(shell)\" -l -i"]
+            execName = shellName
+        } else {
+            // Plain login shell (execName "-zsh") — loads the user's profile so
+            // PATH (git/gh, often Homebrew) resolves under the minimal GUI launch
+            // environment.
+            args = []
+            execName = "-\(shellName)"
+        }
+
         terminal.startProcess(
             executable: shell,
-            args: [],
+            args: args,
             environment: env,
-            execName: "-\(shellName)",
+            execName: execName,
             currentDirectory: workingDirectory.path
         )
     }
@@ -123,7 +180,77 @@ final class EditorTerminalPane: NSViewController, @preconcurrency LocalProcessTe
         return NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
-    func terminate() { terminal?.terminate() }
+    /// Called from EditorWindowController.windowWillClose (main thread), so the
+    /// scroll monitor is torn down here rather than in a nonisolated deinit.
+    func terminate() {
+        terminal?.terminate()
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
+    }
+
+    /// Forward mouse-wheel scrolling to the running program when it has mouse
+    /// tracking on in the alternate screen buffer (full-screen TUIs like the coding
+    /// agent). SwiftTerm's stock `scrollWheel` only scrolls its own scrollback,
+    /// which is empty in the alternate buffer — so without this the wheel does
+    /// nothing over the agent and its scroll view is unreachable. We can't override
+    /// `scrollWheel` (SwiftTerm marks it `public`, not `open`), so intercept wheel
+    /// events with a local monitor and translate them to mouse-wheel button presses.
+    /// In every other case the event passes through to SwiftTerm's native scrollback.
+    private func installScrollForwarding() {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self else { return event }
+            return self.forwardScroll(event) ? nil : event
+        }
+    }
+
+    /// Returns true when `event` was forwarded to a mouse-tracking TUI (and should
+    /// be swallowed); false to let SwiftTerm handle it natively.
+    private func forwardScroll(_ event: NSEvent) -> Bool {
+        guard let terminal, isViewLoaded, event.deltaY != 0,
+              event.window === view.window,
+              let term = terminal.terminal,
+              term.mouseMode != .off,
+              term.isCurrentBufferAlternate else { return false }
+        // Only when the pointer is actually over the terminal grid.
+        let local = terminal.convert(event.locationInWindow, from: nil)
+        guard terminal.bounds.contains(local) else { return false }
+
+        // Wheel up = button 4, wheel down = button 5 (xterm convention), at the cell
+        // under the pointer so the app scrolls the region the user is over. SwiftTerm
+        // draws the grid edge-to-edge, so cells divide the bounds evenly; AppKit's
+        // y-origin is bottom-left while terminal row 0 is at the top.
+        let button = event.deltaY > 0 ? 4 : 5
+        let flags = term.encodeButton(button: button, release: false,
+                                      shift: false, meta: false, control: false)
+        let cols = max(1, term.cols), rows = max(1, term.rows)
+        let cellW = max(1, terminal.bounds.width / CGFloat(cols))
+        let cellH = max(1, terminal.bounds.height / CGFloat(rows))
+        let col = min(cols - 1, max(0, Int(local.x / cellW)))
+        let row = min(rows - 1, max(0, Int((terminal.bounds.height - local.y) / cellH)))
+        let magnitude = Int(abs(event.deltaY))
+        let steps = magnitude > 9 ? 4 : (magnitude > 3 ? 2 : 1)
+        for _ in 0 ..< steps { term.sendEvent(buttonFlags: flags, x: col, y: row) }
+        return true
+    }
+
+    /// Inject a prompt into the running coding agent: paste the text — bracketed
+    /// when the agent's TUI has bracketed-paste mode on, so a multi-line prompt
+    /// arrives as one message instead of submitting line-by-line — then submit
+    /// with a carriage return and focus the terminal so the user sees it run.
+    /// If a plain shell is running instead (the agent was quit), the text simply
+    /// lands at the shell prompt; we don't try to detect that.
+    func sendToAgent(_ text: String) {
+        guard let terminal else { return }
+        let active = terminal.terminal?.bracketedPasteMode ?? false
+        terminal.send(BracketedPaste.bytes(text, active: active, submit: true))
+        focusTerminal()
+    }
+
+    /// Make the terminal the window's first responder (keyboard focus).
+    func focusTerminal() {
+        guard let terminal else { return }
+        view.window?.makeFirstResponder(terminal)
+    }
 
     // MARK: LocalProcessTerminalViewDelegate
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}

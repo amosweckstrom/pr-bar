@@ -30,6 +30,7 @@ const common = {
 const builds = [
   { entry: 'src/tree-entry.mjs', out: 'trees.bundle.js' },
   { entry: 'src/diff-entry.mjs', out: 'diffs.bundle.js' },
+  { entry: 'src/conversation-entry.mjs', out: 'conversation.bundle.js' },
 ];
 
 for (const b of builds) {

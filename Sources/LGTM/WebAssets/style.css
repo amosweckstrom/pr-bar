@@ -53,6 +53,10 @@ body {
   --trees-status-renamed-override: #8250df;
   --trees-status-untracked-override: #1a7f37;
   --trees-status-ignored-override: #8c959f;
+  /* Light-blue wash painted over rows the agent has edited this session. Consumed
+     by a <style> injected into the tree's shadow root (see tree-entry.mjs); custom
+     properties inherit through the shadow boundary, so the override resolves there. */
+  --trees-agent-edit-overlay: rgba(9, 105, 218, 0.12);
 }
 
 .theme-dark .tree-host {
@@ -69,6 +73,7 @@ body {
   --trees-status-renamed-override: #a371f7;
   --trees-status-untracked-override: #3fb950;
   --trees-status-ignored-override: #6e7681;
+  --trees-agent-edit-overlay: rgba(56, 139, 253, 0.20);
 }
 
 /* ---- Diff pane (@pierre/diffs mounts a <diffs-container> here) ---- */
@@ -88,4 +93,249 @@ body {
   font-size: 12.5px;
   padding: 24px;
   text-align: center;
+}
+.lgtm-error { color: #cf222e; }
+.theme-dark .lgtm-error { color: #f85149; }
+
+/* ---- Conversation pane ---- */
+.conversation-host {
+  height: 100%;
+  width: 100%;
+  overflow: auto;
+  background: var(--bg);
+  padding: 10px 12px 28px;
+}
+.section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 14px 2px 8px;
+}
+.section-title:first-child { margin-top: 2px; }
+
+.timeline { display: flex; flex-direction: column; gap: 10px; }
+.timeline-item,
+.file-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--canvas-subtle);
+  overflow: hidden;
+}
+.timeline-item { padding: 8px 10px; }
+.timeline-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
+.timeline-verb { color: var(--muted); }
+
+.file-group { margin-bottom: 10px; }
+.file-group-header {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  word-break: break-all;
+}
+
+/* ---- Threads (shared by diff inline annotations + conversation roll-up) ---- */
+.inline-thread { padding: 4px 8px 8px; }
+.inline-thread .thread { background: var(--canvas-subtle); border: 1px solid var(--border); border-radius: 6px; }
+
+.thread { display: flex; flex-direction: column; }
+.file-group > .thread { border-top: 1px solid var(--border); }
+.file-group > .thread:first-of-type { border-top: none; }
+
+.thread-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  padding: 7px 10px;
+  cursor: pointer;
+}
+.thread-summary:hover { background: rgba(127, 127, 127, 0.08); }
+.thread-caret { color: var(--muted); width: 10px; flex: none; }
+.thread-summary-text { color: var(--muted); flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-jump { flex: none; color: var(--accent); font-size: 11px; cursor: pointer; }
+.thread-jump:hover { text-decoration: underline; }
+
+.thread-body { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+/* `display: flex` above is an author rule, so it beats the UA `[hidden]{display:none}`
+   — without this, collapsing a thread (body.hidden = true) would have no visual
+   effect. The attribute selector raises specificity over the bare class. */
+.thread-body[hidden] { display: none; }
+
+.thread-flash { animation: thread-flash 1.2s ease-out; }
+@keyframes thread-flash {
+  0% { background: rgba(47, 129, 247, 0.28); }
+  100% { background: transparent; }
+}
+
+/* ---- One comment ---- */
+.comment { display: flex; flex-direction: column; gap: 3px; }
+.comment + .comment { border-top: 1px dashed var(--border); padding-top: 8px; }
+.comment-pending { opacity: 0.6; }
+.comment-head { display: flex; align-items: center; gap: 6px; }
+.comment-author { font-weight: 600; }
+.comment-time { color: var(--muted); font-size: 11px; }
+.comment-body { font-size: 13px; word-wrap: break-word; overflow-wrap: anywhere; }
+.comment-body p { margin: 4px 0; }
+.comment-body img { max-width: 100%; height: auto; }
+.comment-body pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.comment-body code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.comment-body :not(pre) > code {
+  background: rgba(127, 127, 127, 0.16);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.comment-body a { color: var(--accent); }
+
+/* ---- Avatars ---- */
+.avatar {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  flex: none;
+  object-fit: cover;
+  background: var(--border);
+}
+.avatar-monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--muted);
+}
+
+/* ---- Badges ---- */
+.badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  flex: none;
+}
+.badge-resolved, .badge-approved { color: #1a7f37; border-color: #1a7f37; }
+.theme-dark .badge-resolved, .theme-dark .badge-approved { color: #3fb950; border-color: #3fb950; }
+.badge-changes { color: #cf222e; border-color: #cf222e; }
+.theme-dark .badge-changes { color: #f85149; border-color: #f85149; }
+.badge-outdated { color: #9a6700; border-color: #9a6700; }
+.theme-dark .badge-outdated { color: #d29922; border-color: #d29922; }
+
+/* ---- Actions + composer ---- */
+.thread-actions { display: flex; gap: 6px; }
+.thread-action-btn,
+.composer-submit {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.thread-action-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.composer { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.composer-input {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+.composer-input:focus { outline: none; border-color: var(--accent); }
+.composer-submit { background: var(--accent); color: #fff; border-color: var(--accent); }
+.composer-submit:hover { opacity: 0.9; }
+.thread-error { color: #cf222e; font-size: 11.5px; width: 100%; }
+.theme-dark .thread-error { color: #f85149; }
+
+/* ---- "Fix with AI" per-comment button + skill menu ---- */
+.comment-fixai-wrap { margin-left: auto; position: relative; flex: none; }
+.comment-fixai {
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.comment-fixai:hover { border-color: var(--accent); background: rgba(9, 105, 218, 0.08); }
+.theme-dark .comment-fixai:hover { background: rgba(56, 139, 253, 0.12); }
+.fixai-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  z-index: 20;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+.fixai-menu-item {
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fixai-menu-item:hover { background: rgba(127, 127, 127, 0.12); }
+
+/* ---- "Agent edits" diff mode: recolor @pierre/diffs green/red → blue via its
+   documented `--diffs-*-override` hooks (custom properties inherit through the
+   component's shadow DOM, same trick as the tree's --trees-*-override). ---- */
+.agent-diff {
+  --diffs-bg-addition-override: #ddf4ff;
+  --diffs-bg-deletion-override: #eef4fb;
+  --diffs-bg-addition-emphasis-override: #b6e3ff;
+  --diffs-bg-deletion-emphasis-override: #cfe6f8;
+  --diffs-bg-addition-number-override: #cae3ff;
+  --diffs-bg-deletion-number-override: #dde9f6;
+  --diffs-addition-color-override: #0969da;
+  --diffs-deletion-color-override: #0a5cc0;
+}
+.theme-dark .agent-diff {
+  --diffs-bg-addition-override: rgba(56, 139, 253, 0.18);
+  --diffs-bg-deletion-override: rgba(56, 139, 253, 0.07);
+  --diffs-bg-addition-emphasis-override: rgba(56, 139, 253, 0.40);
+  --diffs-bg-deletion-emphasis-override: rgba(56, 139, 253, 0.18);
+  --diffs-bg-addition-number-override: rgba(56, 139, 253, 0.30);
+  --diffs-bg-deletion-number-override: rgba(56, 139, 253, 0.12);
+  --diffs-addition-color-override: #58a6ff;
+  --diffs-deletion-color-override: #4493f8;
 }

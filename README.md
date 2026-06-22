@@ -40,6 +40,9 @@ shell, in the worktree) on the right. The tree and diff panes are rendered by
 - Address review comments on your own PRs via an auto-created git worktree
 - Open any PR in a built-in 3-pane review window (tree + diff + terminal) via
   the `</>` button — resizable, follows light/dark, and fully offline
+- Read and act on PR comments inside that window: inline review threads anchored
+  on the diff, a Conversation tab with review summaries + discussion + an
+  inline-comments-by-file roll-up, and in-place reply / resolve / unresolve
 - Pluggable agent (Claude Code, Codex, Gemini CLI, Cursor Agent, or custom) and
   terminal (Terminal, iTerm, Ghostty, WezTerm, kitty, Alacritty)
 - GitHub token stored in the macOS Keychain
@@ -54,7 +57,10 @@ shell, in the worktree) on the right. The tree and diff panes are rendered by
   and its tree/diff panes are vendored, fully-offline JS bundles — the only
   third-party code.
 - A GitHub Personal Access Token with read access to the repos you track
-  (classic: `repo` scope; fine-grained: read-only Pull requests + Contents)
+  (classic: `repo` scope; fine-grained: read-only Pull requests + Contents).
+  Replying to or resolving PR comments in the review window additionally needs
+  write access (classic `repo` already grants it; fine-grained needs read-write
+  Pull requests). Reads and AI review work with a read-only token.
 - For AI review: a terminal emulator and the CLI of your chosen coding agent
   (e.g. `claude`) on your `PATH`. Plain "Review with AI" needs no local clone; to
   open the `</>` review window or address comments on your own PRs, set the repo's

@@ -22,6 +22,11 @@ enum WorktreeData {
         let root: String
         /// Diff base commit SHA (merge-base with the PR's base branch), if resolved.
         let base: String?
+        /// The worktree's current `HEAD` commit SHA, if resolvable. Compared to the
+        /// PR's `headRefOid` by the inline-comment anchor gate: inline threads are
+        /// only placed when these match (otherwise the checkout has drifted from the
+        /// commit the comments were left on, and anchoring would be a guess).
+        let headSHA: String?
         /// All non-ignored file paths, repo-relative, sorted — includes deleted
         /// files (which aren't on disk) so they remain reviewable.
         let paths: [String]
@@ -49,6 +54,7 @@ enum WorktreeData {
     /// remote's default branch and then to nil.
     static func snapshot(root: String, prNumber: Int) -> Snapshot {
         let base = resolveBase(root: root, prNumber: prNumber)
+        let headSHA = trimmed(git(["rev-parse", "HEAD"], root))
         var (status, renames) = statusMap(root: root, base: base)
 
         // Tree = every tracked file ∪ untracked(non-ignored) ∪ deleted, so the
@@ -71,22 +77,26 @@ enum WorktreeData {
         // Drop any path that slipped in empty.
         paths = paths.filter { !$0.isEmpty }
 
-        return Snapshot(root: root, base: base, paths: paths.sorted(), status: status, renames: renames)
+        return Snapshot(root: root, base: base, headSHA: headSHA, paths: paths.sorted(), status: status, renames: renames)
     }
 
     // MARK: - Per-file diff
 
-    /// Old/new content for one file, relative to `base`. Reads the new side from
-    /// the working tree (so uncommitted edits show) and the old side from `base`.
-    /// For a renamed file, `oldPath` is where the file lived at `base`, so the
-    /// "before" side resolves correctly instead of looking absent (which made
-    /// renames render as 100% additions).
-    static func fileDiff(root: String, base: String?, path: String, status: Status,
-                         oldPath: String? = nil) -> FileDiff {
-        let newData: Data? = status == .deleted ? nil : try? Data(contentsOf: fileURL(root, path))
-        let oldData: Data? = {
-            guard status != .added, let base else { return nil }
-            return gitData(["show", "\(base):\(oldPath ?? path)"], root)
+    /// Old/new content for one file between two git refs. A `nil` `newRef` reads
+    /// the live working-tree file (so uncommitted edits show); a non-nil `newRef`
+    /// (and `oldRef`) reads `git show <ref>:<path>`. A `nil` `oldRef` yields no old
+    /// side. Added/deleted rendering falls out naturally from which side comes back
+    /// empty, so the caller needn't classify status precisely. `oldPath` is where a
+    /// renamed file lived on the old side. `status` is carried through to the DTO.
+    ///
+    /// Used for both diff modes: PR changes = (base → headSHA), agent edits =
+    /// (headSHA → working tree, i.e. `newRef == nil`).
+    static func fileDiff(root: String, oldRef: String?, newRef: String?, path: String,
+                         status: Status, oldPath: String? = nil) -> FileDiff {
+        let oldData: Data? = oldRef.flatMap { gitData(["show", "\($0):\(oldPath ?? path)"], root) }
+        let newData: Data? = {
+            if let newRef { return gitData(["show", "\(newRef):\(path)"], root) }
+            return try? Data(contentsOf: fileURL(root, path))
         }()
 
         let binary = isBinary(oldData) || isBinary(newData)
@@ -97,6 +107,36 @@ enum WorktreeData {
             binary: binary,
             status: status
         )
+    }
+
+    /// Back-compat convenience: diff `base` → the working tree (the original
+    /// behaviour — new side from disk, old side from `base`, no old side for adds).
+    static func fileDiff(root: String, base: String?, path: String, status: Status,
+                         oldPath: String? = nil) -> FileDiff {
+        fileDiff(root: root, oldRef: status == .added ? nil : base, newRef: nil,
+                 path: path, status: status, oldPath: oldPath)
+    }
+
+    /// Files the agent changed in the worktree since `sinceSHA` — its session
+    /// edits: tracked changes vs that commit (committed + unstaged) ∪ new untracked
+    /// files. Drives the blue "Agent edits" markers in the tree.
+    static func agentTouchedPaths(root: String, sinceSHA: String) -> [String] {
+        var paths = Set<String>()
+        for line in lines(of: git(["diff", "--name-only", sinceSHA], root)) where !line.isEmpty {
+            paths.insert(line)
+        }
+        for line in lines(of: git(["ls-files", "--others", "--exclude-standard"], root)) where !line.isEmpty {
+            paths.insert(line)
+        }
+        return paths.sorted()
+    }
+
+    /// True when `oid` resolves to a commit in the worktree's object store. Used to
+    /// decide whether the PR head reported by GitHub is locally available to diff
+    /// and anchor against — it usually is (it's an ancestor of the worktree HEAD),
+    /// but won't be if the PR was pushed to after this worktree was created.
+    static func commitExists(root: String, oid: String) -> Bool {
+        gitData(["cat-file", "-e", "\(oid)^{commit}"], root) != nil
     }
 
     // MARK: - Base / status resolution

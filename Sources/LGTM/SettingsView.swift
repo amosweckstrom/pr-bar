@@ -41,7 +41,7 @@ struct SettingsView: View {
                 .padding(11)
             } else {
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("Paste a token with read access to the repos you track.")
+                    Text("Paste a token with read access to the repos you track. To reply to or resolve PR comments in the review window, the token also needs write access (classic: repo scope; fine-grained: read-write Pull requests).")
                         .font(.system(size: 11))
                         .foregroundStyle(p.muted)
                         .fixedSize(horizontal: false, vertical: true)

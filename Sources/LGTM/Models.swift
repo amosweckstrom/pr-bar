@@ -139,6 +139,103 @@ struct AttentionPR: Identifiable {
     var id: String { pr.id }
 }
 
+// MARK: - PR conversation (comments shown in the review window)
+
+/// One comment within a review thread.
+struct ReviewComment {
+    let id: String
+    let author: String
+    let authorAvatarURL: String?
+    let bodyHTML: String
+    let createdAt: Date?
+}
+
+/// Which side of the diff a review thread is anchored to. GitHub's `diffSide` is
+/// LEFT (the base/old side) or RIGHT (the head/new side); anything else (or
+/// missing) defaults to the new side.
+enum DiffSide: Equatable {
+    case left, right
+
+    init(_ raw: String?) {
+        self = raw?.uppercased() == "LEFT" ? .left : .right
+    }
+}
+
+/// What a review thread is anchored to: a specific line, or the file as a whole.
+/// GitHub's `subjectType` is LINE or FILE; anything else defaults to a line.
+enum ThreadSubject: Equatable {
+    case line, file
+
+    init(_ raw: String?) {
+        self = raw?.uppercased() == "FILE" ? .file : .line
+    }
+}
+
+/// One inline review thread, anchored to a line in the diff.
+struct ReviewThread {
+    /// GraphQL node id — the target for resolve/unresolve and reply mutations,
+    /// and the reconcile key when merging a background refresh.
+    let id: String
+    let path: String
+    /// Line in the file at the PR head, on `side`. Nil once the thread is
+    /// outdated (the line no longer exists in the current diff).
+    let line: Int?
+    /// Line at the commit the thread was originally left on, on `side`. Survives
+    /// even when `line` is nil, so an outdated thread can still describe itself.
+    let originalLine: Int?
+    /// Start line of a multi-line thread's range, if any (its end is `line`).
+    let startLine: Int?
+    let side: DiffSide
+    let isResolved: Bool
+    let isOutdated: Bool
+    let subject: ThreadSubject
+    let comments: [ReviewComment]
+}
+
+/// The verdict of a submitted review. GitHub's review `state` is APPROVED /
+/// CHANGES_REQUESTED / COMMENTED / DISMISSED / PENDING; anything else (or a
+/// missing value) reads as a plain comment.
+enum ReviewSummaryState: Equatable {
+    case approved, changesRequested, commented, dismissed, pending
+
+    init(_ raw: String?) {
+        switch raw?.uppercased() {
+        case "APPROVED": self = .approved
+        case "CHANGES_REQUESTED": self = .changesRequested
+        case "DISMISSED": self = .dismissed
+        case "PENDING": self = .pending
+        default: self = .commented
+        }
+    }
+}
+
+/// The summary of one submitted review: its verdict plus any message body.
+struct ReviewSummary {
+    let author: String
+    let authorAvatarURL: String?
+    let state: ReviewSummaryState
+    let bodyHTML: String
+    let submittedAt: Date?
+}
+
+/// One general (issue-style) comment on the PR, not anchored to any line.
+struct IssueComment {
+    let author: String
+    let authorAvatarURL: String?
+    let bodyHTML: String
+    let createdAt: Date?
+}
+
+/// The whole comment payload fetched for one PR's review window.
+struct PRConversation {
+    /// The PR's head commit SHA, against which inline comment line numbers are
+    /// resolved — compared to the worktree's HEAD to gate inline anchoring.
+    let headRefOid: String?
+    let threads: [ReviewThread]
+    let reviews: [ReviewSummary]
+    let conversation: [IssueComment]
+}
+
 /// PRs for one repo, already sorted (review-requested first).
 struct RepoPRs: Identifiable, Codable {
     var repo: TrackedRepo

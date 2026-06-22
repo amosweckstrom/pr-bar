@@ -75,15 +75,19 @@ enum AIReview {
     /// conventional dir is already there, otherwise resolves/creates it headlessly
     /// (no terminal) and opens the window on the resolved `$TARGET`. Failures
     /// surface as an alert.
+    /// - Parameter agentInvocation: coding-agent command the window's terminal
+    ///   opens into (e.g. `claude`); nil for a plain shell.
     /// - Returns: false if no local clone path is configured for the repo.
     @MainActor
     @discardableResult
-    static func openInAppEditor(pr: PullRequest, repo: TrackedRepo) -> Bool {
+    static func openInAppEditor(pr: PullRequest, repo: TrackedRepo,
+                                agentInvocation: String?) -> Bool {
         guard let local = usableLocalPath(for: repo) else { return false }
 
         let existing = worktreeURL(pr: pr, repo: repo)
         if FileManager.default.fileExists(atPath: existing.path) {
-            EditorWindowController.show(worktree: existing, repo: repo, pr: pr)
+            EditorWindowController.show(worktree: existing, repo: repo, pr: pr,
+                                        agentInvocation: agentInvocation)
             return true
         }
 
@@ -94,7 +98,8 @@ enum AIReview {
         runHeadlessResolvingTarget(shellCmd,
                                    failureContext: "open the worktree for PR #\(pr.number)") { target in
             guard let target else { return }   // failure already alerted
-            EditorWindowController.show(worktree: URL(fileURLWithPath: target), repo: repo, pr: pr)
+            EditorWindowController.show(worktree: URL(fileURLWithPath: target), repo: repo, pr: pr,
+                                        agentInvocation: agentInvocation)
         }
         return true
     }

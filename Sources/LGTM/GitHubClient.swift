@@ -299,6 +299,202 @@ struct GitHubClient: Sendable {
         }
     }
 
+    // MARK: - Conversation network
+
+    /// Fetches the full comment payload for one PR's review window: inline review
+    /// threads (with their comments), submitted-review summaries, general issue
+    /// comments, and the head commit SHA (for the anchor gate). One GraphQL query
+    /// over the same PAT transport as the menu queries.
+    func conversation(owner: String, name: String, number: Int) async throws -> PRConversation {
+        let variables: [String: Any] = ["owner": owner, "name": name, "number": number]
+        let json = try await post(query: Self.conversationQuery, variables: variables)
+        return try Self.decodeConversation(from: json)
+    }
+
+    /// Posts a reply onto an existing review thread and returns the created
+    /// comment, so the optimistic reply can be reconciled to the real server one.
+    /// Needs a write-capable token; a missing-scope rejection surfaces as a
+    /// `GitHubError` from the transport.
+    func replyToThread(threadID: String, body: String) async throws -> ReviewComment {
+        let mutation = """
+        mutation($threadId: ID!, $body: String!) {
+          addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) {
+            comment { id author { login avatarUrl(size: 40) } bodyHTML createdAt }
+          }
+        }
+        """
+        let json = try await post(query: mutation, variables: ["threadId": threadID, "body": body])
+        return try Self.decodeReplyComment(from: json)
+    }
+
+    /// Resolves or unresolves a review thread and returns its new resolved state.
+    /// Needs a write-capable token.
+    func setThreadResolved(threadID: String, resolved: Bool) async throws -> Bool {
+        let field = resolved ? "resolveReviewThread" : "unresolveReviewThread"
+        let mutation = """
+        mutation($threadId: ID!) {
+          \(field)(input: {threadId: $threadId}) {
+            thread { isResolved }
+          }
+        }
+        """
+        let json = try await post(query: mutation, variables: ["threadId": threadID])
+        return try Self.decodeResolvedState(from: json, mutation: field)
+    }
+
+    /// The read query backing `conversation(owner:name:number:)`. Every field here
+    /// is consumed by `decodeConversation` / `decodeThread` / `decodeReview` /
+    /// `decodeIssueComment`; keep the two in sync.
+    private static let conversationQuery = """
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          headRefOid
+          reviewThreads(first: 100) {
+            nodes {
+              id
+              path
+              line
+              originalLine
+              startLine
+              diffSide
+              isResolved
+              isOutdated
+              subjectType
+              comments(first: 100) {
+                nodes {
+                  id
+                  bodyHTML
+                  createdAt
+                  author { login avatarUrl(size: 40) }
+                }
+              }
+            }
+          }
+          reviews(first: 50) {
+            nodes {
+              state
+              bodyHTML
+              submittedAt
+              author { login avatarUrl(size: 40) }
+            }
+          }
+          comments(first: 100) {
+            nodes {
+              bodyHTML
+              createdAt
+              author { login avatarUrl(size: 40) }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    // MARK: - Conversation decode
+
+    /// Pure, synchronous decode of a GitHub GraphQL pull-request conversation
+    /// response (review threads, review summaries, and general comments) into a
+    /// `PRConversation`. No networking, so it is exercised directly in tests with
+    /// fixture dictionaries.
+    static func decodeConversation(from json: [String: Any]) throws -> PRConversation {
+        guard let data = json["data"] as? [String: Any],
+              let repository = data["repository"] as? [String: Any],
+              let pr = repository["pullRequest"] as? [String: Any] else {
+            throw GitHubError.decoding("missing data.repository.pullRequest")
+        }
+        let threadNodes = ((pr["reviewThreads"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
+        let reviewNodes = ((pr["reviews"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
+        let commentNodes = ((pr["comments"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
+        return PRConversation(
+            headRefOid: pr["headRefOid"] as? String,
+            threads: threadNodes.map(decodeThread),
+            reviews: reviewNodes.map(decodeReview),
+            conversation: commentNodes.map(decodeIssueComment)
+        )
+    }
+
+    /// Pure decode of an `addPullRequestReviewThreadReply` mutation response into
+    /// the created comment, so an optimistic reply can be reconciled to the real
+    /// server comment.
+    static func decodeReplyComment(from json: [String: Any]) throws -> ReviewComment {
+        guard let data = json["data"] as? [String: Any],
+              let payload = data["addPullRequestReviewThreadReply"] as? [String: Any],
+              let comment = payload["comment"] as? [String: Any] else {
+            throw GitHubError.decoding("missing addPullRequestReviewThreadReply.comment")
+        }
+        return decodeComment(comment)
+    }
+
+    /// Pure decode of a `resolveReviewThread` / `unresolveReviewThread` mutation
+    /// response into the thread's new resolved state. `mutation` is the field name
+    /// of the mutation that ran.
+    static func decodeResolvedState(from json: [String: Any], mutation: String) throws -> Bool {
+        guard let data = json["data"] as? [String: Any],
+              let payload = data[mutation] as? [String: Any],
+              let thread = payload["thread"] as? [String: Any],
+              let isResolved = thread["isResolved"] as? Bool else {
+            throw GitHubError.decoding("missing \(mutation).thread.isResolved")
+        }
+        return isResolved
+    }
+
+    private static func decodeIssueComment(_ node: [String: Any]) -> IssueComment {
+        IssueComment(
+            author: login(node["author"]),
+            authorAvatarURL: avatarURL(node["author"]),
+            bodyHTML: node["bodyHTML"] as? String ?? "",
+            createdAt: ISO8601DateFormatter().date(from: node["createdAt"] as? String ?? "")
+        )
+    }
+
+    private static func decodeReview(_ node: [String: Any]) -> ReviewSummary {
+        ReviewSummary(
+            author: login(node["author"]),
+            authorAvatarURL: avatarURL(node["author"]),
+            state: ReviewSummaryState(node["state"] as? String),
+            bodyHTML: node["bodyHTML"] as? String ?? "",
+            submittedAt: ISO8601DateFormatter().date(from: node["submittedAt"] as? String ?? "")
+        )
+    }
+
+    private static func decodeThread(_ node: [String: Any]) -> ReviewThread {
+        let commentNodes = ((node["comments"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
+        return ReviewThread(
+            id: node["id"] as? String ?? "",
+            path: node["path"] as? String ?? "",
+            line: node["line"] as? Int,
+            originalLine: node["originalLine"] as? Int,
+            startLine: node["startLine"] as? Int,
+            side: DiffSide(node["diffSide"] as? String),
+            isResolved: node["isResolved"] as? Bool ?? false,
+            isOutdated: node["isOutdated"] as? Bool ?? false,
+            subject: ThreadSubject(node["subjectType"] as? String),
+            comments: commentNodes.map(decodeComment)
+        )
+    }
+
+    private static func decodeComment(_ node: [String: Any]) -> ReviewComment {
+        ReviewComment(
+            id: node["id"] as? String ?? "",
+            author: login(node["author"]),
+            authorAvatarURL: avatarURL(node["author"]),
+            bodyHTML: node["bodyHTML"] as? String ?? "",
+            createdAt: ISO8601DateFormatter().date(from: node["createdAt"] as? String ?? "")
+        )
+    }
+
+    /// A GraphQL `author` node's login, falling back to "ghost" (a deleted user),
+    /// matching the PR-list decode.
+    private static func login(_ author: Any?) -> String {
+        (author as? [String: Any])?["login"] as? String ?? "ghost"
+    }
+
+    /// A GraphQL `author` node's avatar URL, if present.
+    private static func avatarURL(_ author: Any?) -> String? {
+        (author as? [String: Any])?["avatarUrl"] as? String
+    }
+
     // MARK: - Transport
 
     private func post(query: String, variables: [String: Any]) async throws -> [String: Any] {
